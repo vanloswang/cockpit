@@ -1,6 +1,9 @@
 {
-    "version": 0,
+    "version": "@VERSION@",
     "name": "storage",
+    "requires": {
+	"cockpit": "122"
+    },
 
     "menu": {
         "index": {

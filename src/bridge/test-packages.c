@@ -25,9 +25,11 @@
 
 #include "mock-transport.h"
 
+#include "common/cockpitlog.h"
 #include "common/cockpitjson.h"
 #include "common/cockpittest.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 extern const gchar **cockpit_bridge_data_dirs;
@@ -86,7 +88,14 @@ setup (TestCase *tc,
     cockpit_expect_warning (fixture->expect);
 
   if (fixture->datadirs[0])
-    cockpit_bridge_data_dirs = (const gchar **)fixture->datadirs;
+    {
+      cockpit_bridge_data_dirs = (const gchar **)fixture->datadirs;
+    }
+  else
+    {
+      cockpit_expect_message ("incompatible: package requires a later version of cockpit: 999.5*");
+      cockpit_expect_message ("requires: package has an unknown requirement: unknown");
+    }
 
   tc->packages = cockpit_packages_new ();
 
@@ -218,6 +227,50 @@ test_localized_unknown (TestCase *tc,
   g_bytes_unref (data);
 }
 
+static const Fixture fixture_version = {
+  .path = "/incompatible/test.html",
+};
+
+static void
+test_incompatible_version (TestCase *tc,
+                           gconstpointer fixture)
+{
+  GBytes *data;
+  guint count;
+
+  g_assert (fixture == &fixture_version);
+
+  while (tc->closed == FALSE)
+    g_main_context_iteration (NULL, TRUE);
+  g_assert_cmpstr (tc->problem, ==, NULL);
+
+  data = mock_transport_combine_output (tc->transport, "444", &count);
+  cockpit_assert_bytes_eq (data, "{\"status\":503,\"reason\":\"This package requires Cockpit version 999.5 or later\",\"headers\":{\"Content-Type\":\"text/html; charset=utf8\"}}<html><head><title>This package requires Cockpit version 999.5 or later</title></head><body>This package requires Cockpit version 999.5 or later</body></html>\n", -1);
+  g_bytes_unref (data);
+}
+
+static const Fixture fixture_requires = {
+  .path = "/requires/test.html",
+};
+
+static void
+test_incompatible_requires (TestCase *tc,
+                            gconstpointer fixture)
+{
+  GBytes *data;
+  guint count;
+
+  g_assert (fixture == &fixture_requires);
+
+  while (tc->closed == FALSE)
+    g_main_context_iteration (NULL, TRUE);
+  g_assert_cmpstr (tc->problem, ==, NULL);
+
+  data = mock_transport_combine_output (tc->transport, "444", &count);
+  cockpit_assert_bytes_eq (data, "{\"status\":503,\"reason\":\"This package is not compatible with this version of Cockpit\",\"headers\":{\"Content-Type\":\"text/html; charset=utf8\"}}<html><head><title>This package is not compatible with this version of Cockpit</title></head><body>This package is not compatible with this version of Cockpit</body></html>\n", -1);
+  g_bytes_unref (data);
+}
+
 static const Fixture fixture_large = {
   .path = "/test/sub/COPYING",
 };
@@ -298,6 +351,14 @@ test_listing (TestCase *tc,
                           " },"
                           " \"test\": {"
                           "   \"description\" : \"dummy\""
+                          " },"
+                          " \"incompatible\": {"
+                          "   \"description\" : \"incompatible package\","
+                          "   \"requires\" : { \"cockpit\" : \"999.5\" }"
+                          " },"
+                          " \"requires\": {"
+                          "   \"description\" : \"requires package\","
+                          "   \"requires\" : { \"unknown\" : \"requirement\" }"
                           " }"
                           "}");
   json_node_free (node);
@@ -425,7 +486,7 @@ test_bad_receive (TestCase *tc,
 {
   GBytes *bad;
 
-  cockpit_expect_warning ("444: channel received message after done");
+  cockpit_expect_message ("444: channel received message after done");
 
   /* A resource2 channel should never have payload sent to it */
   bad = g_bytes_new_static ("bad", 3);
@@ -467,6 +528,8 @@ static void
 setup_basic (TestCase *tc,
              gconstpointer data)
 {
+  cockpit_expect_message ("incompatible: package requires a later version of cockpit: 999.5*");
+  cockpit_expect_message ("requires: package has an unknown requirement: unknown");
   tc->packages = cockpit_packages_new ();
 }
 
@@ -536,6 +599,33 @@ test_resolve_not_found (TestCase *tc,
   g_assert (path == NULL);
 }
 
+static int
+compar_str (const void *pa,
+            const void *pb)
+{
+  return strcmp (*(const char**)pa, *(const char**)pb);
+}
+
+static void
+test_get_names (TestCase *tc,
+                gconstpointer fixture)
+{
+  gchar **names;
+  gchar *result;
+
+  names = cockpit_packages_get_names (tc->packages);
+  g_assert (names != NULL);
+
+  qsort (names, g_strv_length (names), sizeof (gchar *), compar_str);
+  result = g_strjoinv (", ", names);
+
+  /* Note that unavailable packages are not included */
+  g_assert_cmpstr (result, ==, "another, second, test");
+
+  g_free (result);
+  g_free (names);
+}
+
 int
 main (int argc,
       char *argv[])
@@ -553,6 +643,10 @@ main (int argc,
               setup, test_localized_translated, teardown);
   g_test_add ("/packages/localized-unknown", TestCase, &fixture_unknown,
               setup, test_localized_unknown, teardown);
+  g_test_add ("/packages/incompatible/version", TestCase, &fixture_version,
+              setup, test_incompatible_version, teardown);
+  g_test_add ("/packages/incompatible/requires", TestCase, &fixture_requires,
+              setup, test_incompatible_requires, teardown);
   g_test_add ("/packages/large", TestCase, &fixture_large,
               setup, test_large, teardown);
   g_test_add ("/packages/listing", TestCase, &fixture_listing,
@@ -586,6 +680,9 @@ main (int argc,
               setup_basic, test_resolve_bad_package, teardown_basic);
   g_test_add ("/packages/resolve/not-found", TestCase, NULL,
               setup_basic, test_resolve_not_found, teardown_basic);
+
+  g_test_add ("/packages/get-names", TestCase, NULL,
+              setup_basic, test_get_names, teardown_basic);
 
   return g_test_run ();
 }

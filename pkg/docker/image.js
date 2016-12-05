@@ -17,14 +17,19 @@
  * along with Cockpit; If not, see <http://www.gnu.org/licenses/>.
  */
 
-define([
-    "jquery",
-    "base1/cockpit",
-    "./mustache",
-    "./docker",
-    "./util",
-    "./run"
-], function($, cockpit, Mustache, docker, util) {
+(function() {
+    "use strict";
+
+    var $ = require("jquery");
+    var cockpit = require("cockpit");
+
+    var Mustache = require("mustache");
+
+    var docker = require("./docker");
+    var util = require("./util");
+
+    require("./run");
+
     var _ = cockpit.gettext;
     var C_ = cockpit.gettext;
 
@@ -50,7 +55,7 @@ define([
         setup: function() {
             var self = this;
 
-            $('#image-details .breadcrumb a').on("click", function() {
+            $('#image-details .content-filter a').on("click", function() {
                 cockpit.location.go('/');
             });
 
@@ -115,7 +120,7 @@ define([
             if (info.RepoTags && info.RepoTags.length > 0)
                 this.name = info.RepoTags[0];
 
-            $('#image-details .breadcrumb .active').text(this.name);
+            $('#image-details .content-filter h3 span').text(this.name);
 
             $('#image-details-id').text(info.Id);
             $('#image-details-tags').html(util.multi_line(info.RepoTags));
@@ -182,7 +187,7 @@ define([
         };
     }
 
-    return {
+    module.exports = {
         init: init_image_details
     };
-});
+}());

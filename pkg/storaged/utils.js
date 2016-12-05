@@ -17,12 +17,15 @@
  * along with Cockpit; If not, see <http://www.gnu.org/licenses/>.
  */
 
-define([
-    "jquery",
-    "base1/cockpit",
-    "./mustache",
-    "./service"
-], function($, cockpit, mustache, service) {
+(function() {
+    "use strict";
+
+    var $ = require("jquery");
+    var cockpit = require("cockpit");
+
+    var mustache = require("mustache");
+    var service = require("service");
+
     var _ = cockpit.gettext;
     var C_ = cockpit.gettext;
 
@@ -30,6 +33,25 @@ define([
      */
 
     var utils = { };
+
+    utils.compare_versions = function compare_versions(a, b) {
+        function to_ints(str) {
+            return str.split(".").map(function (s) { return s ? parseInt(s, 10) : 0; });
+        }
+
+        var a_ints = to_ints(a);
+        var b_ints = to_ints(b);
+        var len = Math.min(a_ints.length, b_ints.length);
+        var i;
+
+        for (i = 0; i < len; i++) {
+            if (a_ints[i] == b_ints[i])
+                continue;
+            return a_ints[i] - b_ints[i];
+        }
+
+        return a_ints.length - b_ints.length;
+    };
 
     var hostnamed = cockpit.dbus("org.freedesktop.hostname1").proxy();
 
@@ -104,15 +126,15 @@ define([
 
     utils.validate_lvm2_name = function validate_lvm2_name(name) {
         if (name === "")
-            return _("Name can not be empty.");
+            return _("Name cannot be empty.");
         if (name.length > 127)
-            return _("Name can not be longer than 127 characters.");
+            return _("Name cannot be longer than 127 characters.");
         var m = name.match(/[^a-zA-Z0-9+._-]/);
         if (m) {
             if (m[0].search(/\s+/) === -1)
-                return cockpit.format(_("Name can not contain the character '$0'."), m[0]);
+                return cockpit.format(_("Name cannot contain the character '$0'."), m[0]);
             else
-                    return cockpit.format(_("Name can not contain whitespace."), m[0]);
+                    return cockpit.format(_("Name cannot contain whitespace."), m[0]);
         }
     };
 
@@ -332,6 +354,70 @@ define([
         $zone.removeClass('armed');
     };
 
+
+    function get_children(client, path) {
+        var children = [ ];
+
+        if (client.blocks_cleartext[path]) {
+            children.push(client.blocks_cleartext[path].path);
+        }
+
+        if (client.blocks_ptable[path]) {
+            client.blocks_partitions[path].forEach(function (part) {
+                if (!part.IsContainer)
+                    children.push(part.path);
+            });
+        }
+
+        if (client.blocks_part[path] && client.blocks_part[path].IsContainer) {
+            var ptable_path = client.blocks_part[path].Table;
+            client.blocks_partitions[ptable_path].forEach(function (part) {
+                if (part.IsContained)
+                    children.push(part.path);
+            });
+        }
+
+        if (client.vgroups[path]) {
+            client.vgroups_lvols[path].forEach(function (lvol) {
+                if (client.lvols_block[lvol.path])
+                    children.push(client.lvols_block[lvol.path].path);
+            });
+        }
+
+        return children;
+    }
+
+    utils.get_usage_alerts = function get_usage_alerts(client, path) {
+        var block = client.blocks[path];
+        var fsys = client.blocks_fsys[path];
+        var pvol = client.blocks_pvol[path];
+
+        var usage =
+            utils.flatten(get_children(client, path).map(
+                function (p) { return utils.get_usage_alerts (client, p); }));
+
+        if (fsys && fsys.MountPoints.length > 0)
+            usage.push({ usage: 'mounted',
+                         Message: cockpit.format(_("Device $0 is mounted on $1"),
+                                                 utils.block_name(block),
+                                                 utils.decode_filename(fsys.MountPoints[0]))
+                       });
+        if (block && client.mdraids[block.MDRaidMember])
+            usage.push({ usage: 'mdraid-member',
+                         Message: cockpit.format(_("Device $0 is a member of RAID Array $1"),
+                                                 utils.block_name(block),
+                                                 utils.mdraid_name(client.mdraids[block.MDRaidMember]))
+                       });
+        if (pvol && client.vgroups[pvol.VolumeGroup])
+            usage.push({ usage: 'pvol',
+                         Message: cockpit.format(_("Device $0 is a physical volume of $1"),
+                                                 utils.block_name(block),
+                                                 client.vgroups[pvol.VolumeGroup].Name)
+                       });
+
+        return usage;
+    };
+
     /* jQuery.amend function. This will be removed as we move towards React */
 
     function sync(output, input, depth) {
@@ -407,5 +493,27 @@ define([
         return this;
     };
 
-    return utils;
-});
+    /* Prevent flicker due to the marriage of jQuery and React here */
+    utils.hide = function hide(selector) {
+        var element = document.querySelector("#storage-detail");
+        element.setAttribute("hidden", "");
+    };
+
+    utils.show_soon = function show_soon(selector, ready) {
+        var element = document.querySelector(selector);
+        if (!element.hasAttribute("hidden"))
+            return;
+        var val = element.getAttribute("hidden");
+        if (ready) {
+            element.removeAttribute("hidden");
+            window.clearTimeout(parseInt(val, 10));
+        } else if (!val) {
+            val = window.setTimeout(function() {
+                show_soon(selector, true);
+            }, 2000);
+            element.setAttribute("hidden", String(val));
+        }
+    };
+
+    module.exports = utils;
+}());

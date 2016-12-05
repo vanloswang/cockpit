@@ -25,6 +25,7 @@ from time import sleep
 from urlparse import urlparse
 
 import argparse
+import fnmatch
 import subprocess
 import os
 import atexit
@@ -50,6 +51,8 @@ __all__ = (
     'arg_parser',
     'Browser',
     'MachineCase',
+    'skipImage',
+    'Error',
 
     'sit',
     'wait',
@@ -228,6 +231,9 @@ class Browser:
     def wait_val(self, selector, val):
         return self.wait_js_func('ph_has_val', selector, val)
 
+    def wait_not_val(self, selector, val):
+        return self.wait_js_func('!ph_has_val', selector, val)
+
     def wait_attr(self, selector, attr, val):
         return self.wait_js_func('ph_has_attr', selector, attr, val)
 
@@ -318,7 +324,7 @@ class Browser:
                 self.wait_visible("iframe.container-frame[name='%s']" % frame)
                 break
             except Error, ex:
-                if reconnect and ex.msg == 'timeout':
+                if reconnect and ex.msg.startswith('timeout'):
                     reconnect = False
                     if self.is_present("#machine-reconnect"):
                         self.click("#machine-reconnect", True)
@@ -480,6 +486,7 @@ class MachineCase(unittest.TestCase):
             self.failed = True
             self.snapshot("FAIL")
             self.copy_journal("FAIL")
+            self.copy_cores("FAIL")
             if opts.sit:
                 print >> sys.stderr, err
                 if self.machine:
@@ -537,7 +544,7 @@ class MachineCase(unittest.TestCase):
 
         # Reauth stuff
         '.*Reauthorizing unix-user:.*',
-        '.*user .* was reauthorized',
+        '.*user .* was reauthorized.*',
         'cockpit-polkit helper exited with status: 0',
 
         # Reboots are ok
@@ -554,6 +561,9 @@ class MachineCase(unittest.TestCase):
         # pam_lastlog outdated complaints
         ".*/var/log/lastlog: No such file or directory",
 
+        # ssh messages may be dropped when closing
+        '10.*: dropping message while waiting for child to exit',
+
         # SELinux messages to ignore
         "(audit: )?type=1403 audit.*",
         "(audit: )?type=1404 audit.*",
@@ -567,9 +577,19 @@ class MachineCase(unittest.TestCase):
         # https://bugzilla.redhat.com/show_bug.cgi?id=1242656
         "(audit: )?type=1400 .*denied.*comm=\"cockpit-ws\".*name=\"unix\".*dev=\"proc\".*",
         "(audit: )?type=1400 .*denied.*comm=\"ssh-transport-c\".*name=\"unix\".*dev=\"proc\".*",
+        "(audit: )?type=1400 .*denied.*comm=\"cockpit-ssh\".*name=\"unix\".*dev=\"proc\".*",
+
+        # https://bugzilla.redhat.com/show_bug.cgi?id=1374820
+        "(audit: )?type=1400 .*denied.*comm=\"systemd\" path=\"/run/systemd/inaccessible/blk\".*",
 
         # SELinux fighting with systemd: https://bugzilla.redhat.com/show_bug.cgi?id=1253319
         "(audit: )?type=1400 audit.*systemd-journal.*path=2F6D656D66643A73642D73797374656D642D636F726564756D202864656C6574656429",
+
+        # apparmor loading
+        "(audit: )?type=1400.*apparmor=\"STATUS\".*",
+
+        # apparmor noise
+        "(audit: )?type=1400.*apparmor=\"ALLOWED\".*",
 
         # Messages from systemd libraries when they are in debug mode
         'Successfully loaded SELinux database in.*',
@@ -580,6 +600,9 @@ class MachineCase(unittest.TestCase):
         # HACK: https://github.com/systemd/systemd/pull/1758
         'Error was encountered while opening journal files:.*',
         'Failed to get data: Cannot assign requested address',
+
+        # Various operating systems see this from time to time
+        "Journal file.*truncated, ignoring file.",
     ]
 
     def allow_journal_messages(self, *patterns):
@@ -645,6 +668,7 @@ class MachineCase(unittest.TestCase):
                     first = m
         if not all_found:
             self.copy_journal("FAIL")
+            self.copy_cores("FAIL")
             raise Error(first)
 
     def snapshot(self, title, label=None):
@@ -664,6 +688,17 @@ class MachineCase(unittest.TestCase):
                     m.execute("journalctl", stdout=fp)
                     print "Journal extracted to %s" % (log)
                     attach(log)
+
+    def copy_cores(self, title, label=None):
+        for name, m in self.machines.iteritems():
+            if m.address:
+                dest = "%s-%s-%s.core" % (label or self.label(), m.address, title)
+                m.download_dir("/var/lib/systemd/coredump", dest)
+                try:
+                    os.rmdir(dest)
+                except OSError:
+                    print "Core dumps downloaded to %s" % (dest)
+                    attach(dest)
 
 some_failed = False
 
@@ -743,6 +778,12 @@ def list_directories(dirs):
             result.append(os.path.join(d, f))
     return result
 
+def skipImage(reason, *args):
+    image = testinfra.DEFAULT_IMAGE
+    if image in args:
+        return unittest.skip("{0}: {1}".format(image, reason))
+    return lambda func: func
+
 class Naughty(object):
     def normalize_traceback(self, trace):
         # All file paths converted to basename
@@ -772,7 +813,7 @@ class Naughty(object):
         return True
 
     def check_issue(self, trace):
-        directories =  [ os.path.join(testinfra.TEST_DIR, "verify", "naughty") ]
+        directories =  [ ]
         image_naughty = os.path.join(testinfra.TEST_DIR, "verify", "naughty-" + testinfra.DEFAULT_IMAGE)
         if os.path.exists(image_naughty):
             directories.append(image_naughty)
@@ -785,8 +826,9 @@ class Naughty(object):
             except:
                 continue
             with open(naughty, "r") as fp:
-                contents = self.normalize_traceback(fp.read())
-            if contents in trace:
+                match = "*" + self.normalize_traceback(fp.read()) + "*"
+            # Match as in a file name glob, albeit multi line, and account for literal pastes with '[]'
+            if fnmatch.fnmatchcase(trace, match) or fnmatch.fnmatchcase(trace, match.replace("[", "?")):
                 number = n
         if not number:
             return False

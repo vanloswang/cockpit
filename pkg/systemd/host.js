@@ -17,23 +17,22 @@
  * along with Cockpit; If not, see <http://www.gnu.org/licenses/>.
  */
 
-define([
-    "jquery",
-    "base1/cockpit",
-    "./mustache",
-    "shell/po",
-    "performance/dialog",
-    "./service",
-    "./plot",
-    "data!./ssh-list-host-keys.sh",
-    "system/bootstrap-datepicker",
-    "system/bootstrap-combobox",
-    "./patterns",
-    "./flot",
-], function($, cockpit, Mustache, po, performance, service, plot, host_keys_script) {
-"use strict";
+var $ = require("jquery");
+var cockpit = require("cockpit");
 
-cockpit.locale(po);
+var Mustache = require("mustache");
+var plot = require("plot");
+var service = require("service");
+
+/* These add themselves to jQuery so just including is enough */
+require("patterns");
+require("bootstrap-datepicker/dist/js/bootstrap-datepicker");
+require("bootstrap-combobox/js/bootstrap-combobox");
+
+var shutdown = require("./shutdown");
+
+var host_keys_script = require("raw!./ssh-list-host-keys.sh");
+
 var _ = cockpit.gettext;
 var C_ = cockpit.gettext;
 
@@ -111,7 +110,7 @@ function ServerTime() {
      * behavior and formatting of a Date() object in the absence of
      * IntlDateFormat and  friends.
      */
-    Object.defineProperty(self, 'now', {
+    Object.defineProperty(self, 'utc_fake_now', {
         enumerable: true,
         get: function get() {
             var offset = time_offset + remote_offset;
@@ -119,8 +118,15 @@ function ServerTime() {
         }
     });
 
+    Object.defineProperty(self, 'now', {
+        enumerable: true,
+        get: function get() {
+            return new Date(time_offset + (new Date()).valueOf());
+        }
+    });
+
     self.format = function format(and_time) {
-        var string = self.now.toISOString();
+        var string = self.utc_fake_now.toISOString();
         if (!and_time)
             return string.split('T')[0];
         var pos = string.lastIndexOf(':');
@@ -133,22 +139,29 @@ function ServerTime() {
         $(self).triggerHandler("changed");
     }, 30000);
 
-    function offsets(timems, offsetms) {
-        var now = new Date();
-        time_offset = (timems - now.valueOf());
-        remote_offset = offsetms;
-        $(self).triggerHandler("changed");
-    }
+    self.wait = function wait() {
+        if (remote_offset === null)
+            return self.update();
+        return cockpit.resolve();
+    };
 
     self.update = function update() {
-        cockpit.spawn(["date", "+%s:%:z"])
+        return cockpit.spawn(["date", "+%s:%:z"], { err: "message" })
             .done(function(data) {
                 var parts = data.trim().split(":").map(function(x) {
                     return parseInt(x, 10);
                 });
                 if (parts[1] < 0)
                     parts[2] = -(parts[2]);
-                offsets(parts[0] * 1000, (parts[1] * 3600000) + parts[2] * 60000);
+                var timems = parts[0] * 1000;
+                var offsetms = (parts[1] * 3600000) + parts[2] * 60000;
+                var now = new Date();
+                time_offset = (timems - now.valueOf());
+                remote_offset = offsetms;
+                $(self).triggerHandler("changed");
+            })
+            .fail(function(ex) {
+                console.log("Couldn't calculate server time offset: " + cockpit.message(ex));
             });
     };
 
@@ -237,9 +250,6 @@ PageServer.prototype = {
         $('#system_information_systime_button').on('click', function () {
             change_systime_dialog.display(self.server_time);
         });
-
-        self.performance_link = performance.link();
-        $("#system-info-performance td.button-location").append(self.performance_link);
 
         self.server_time = new ServerTime();
         $(self.server_time).on("changed", function() {
@@ -702,8 +712,7 @@ PageServer.prototype = {
     },
 
     shutdown: function(action_type) {
-        PageShutdownDialog.type = action_type;
-        $('#shutdown-dialog').modal('show');
+        shutdown(action_type, this.server_time);
     },
 };
 
@@ -785,8 +794,8 @@ PageSystemInformationChangeHostname.prototype = {
         var valid = false;
         var can_apply = false;
 
-        var charError = "Real host name can only contain lower-case characters, digits, dashes, and periods (with populated subdomains)";
-        var lengthError = "Real host name must be 64 characters or less";
+        var charError = _("Real host name can only contain lower-case characters, digits, dashes, and periods (with populated subdomains)");
+        var lengthError = _("Real host name must be 64 characters or less");
 
         var validLength = $("#sich-hostname").val().length <= 64;
         var hostname = $("#sich-hostname").val();
@@ -928,8 +937,8 @@ PageSystemInformationChangeSystime.prototype = {
         var self = this;
 
         $('#systime-date-input').val(self.server_time.format());
-        $('#systime-time-minutes').val(self.server_time.now.getUTCMinutes());
-        $('#systime-time-hours').val(self.server_time.now.getUTCHours());
+        $('#systime-time-minutes').val(self.server_time.utc_fake_now.getUTCMinutes());
+        $('#systime-time-hours').val(self.server_time.utc_fake_now.getUTCHours());
 
         self.ntp_type = self.server_time.timedate.NTP ?
                         (self.custom_ntp_enabled ? 'ntp_time_custom' : 'ntp_time') : 'manual_time';
@@ -1281,103 +1290,6 @@ function PageSystemInformationChangeSystime() {
     this._init();
 }
 
-PageShutdownDialog.prototype = {
-    _init: function() {
-        this.id = "shutdown-dialog";
-        this.delay = 0;
-    },
-
-    setup: function() {
-        var self = this;
-
-        $("#shutdown-delay li").on("click", function(ev) {
-            self.delay = $(this).attr("value");
-            self.update();
-        });
-
-        $("#shutdown-time input").change($.proxy(self, "update"));
-    },
-
-    enter: function(event) {
-        var self = this;
-
-        $("#shutdown-message").
-            val("").
-            attr("placeholder", _("Message to logged in users")).
-            attr("rows", 5);
-
-        /* Track the value correctly */
-        self.delay = $("#shutdown-delay li:first-child").attr("value");
-
-        if (PageShutdownDialog.type == 'shutdown') {
-          $('#shutdown-dialog .modal-title').text(_("Shutdown"));
-          $("#shutdown-action").click($.proxy(this, "shutdown"));
-          $("#shutdown-action").text(_("Shutdown"));
-        } else {
-          $('#shutdown-dialog .modal-title').text(_("Restart"));
-          $("#shutdown-action").click($.proxy(this, "restart"));
-          $("#shutdown-action").text(_("Restart"));
-        }
-        this.update();
-    },
-
-    show: function(e) {
-    },
-
-    leave: function() {
-    },
-
-    update: function() {
-        var self = this;
-        var disabled = false;
-
-        $("#shutdown-time").toggle(self.delay == "x");
-        if (self.delay == "x") {
-            var h = parseInt($("#shutdown-time input:nth-child(1)").val(), 10);
-            var m = parseInt($("#shutdown-time input:nth-child(3)").val(), 10);
-            var valid = (h >= 0 && h < 24) && (m >= 0 && m < 60);
-            $("#shutdown-time").toggleClass("has-error", !valid);
-            if (!valid)
-                disabled = true;
-        }
-
-        $("#shutdown-delay button span").text($("#shutdown-delay li[value='" + self.delay + "']").text());
-        $("#shutdown-action").prop('disabled', disabled);
-    },
-
-    do_action: function(op) {
-        var self = this;
-        var message = $("#shutdown-message").val();
-        var when;
-
-        if (self.delay == "x")
-            when = ($("#shutdown-time input:nth-child(1)").val() + ":" +
-                    $("#shutdown-time input:nth-child(3)").val());
-        else
-            when = "+" + self.delay;
-
-        var arg = (op == "shutdown") ? "--poweroff" : "--reboot";
-
-        if (op == "restart")
-            cockpit.hint("restart");
-
-        var promise = cockpit.spawn(["shutdown", arg, when, message], { superuser: "try" });
-        $('#shutdown-dialog').dialog("promise", promise);
-    },
-
-    restart: function() {
-        this.do_action('restart');
-    },
-
-    shutdown: function() {
-        this.do_action('shutdown');
-    }
-};
-
-function PageShutdownDialog() {
-    this._init();
-}
-
 PageCpuStatus.prototype = {
     _init: function() {
         this.id = "cpu_status";
@@ -1486,11 +1398,11 @@ PageMemoryStatus.prototype = {
                     }
                    },
             xaxis: {show: true,
-                    ticks: [[0.0*60, "5 min"],
-                            [1.0*60, "4 min"],
-                            [2.0*60, "3 min"],
-                            [3.0*60, "2 min"],
-                            [4.0*60, "1 min"]]},
+                    ticks: [[0.0 * 60, _("5 min")],
+                            [1.0 * 60, _("4 min")],
+                            [2.0 * 60, _("3 min")],
+                            [3.0 * 60, _("2 min")],
+                            [4.0 * 60, _("1 min")]]},
             x_rh_stack_graphs: true
         };
 
@@ -1644,12 +1556,9 @@ function init() {
 
     dialog_setup(new PageSystemInformationChangeHostname());
     dialog_setup(change_systime_dialog = new PageSystemInformationChangeSystime());
-    dialog_setup(new PageShutdownDialog());
 
     $(cockpit).on("locationchanged", navigate);
     navigate();
 }
 
 $(init);
-
-});

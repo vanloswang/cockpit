@@ -25,13 +25,28 @@ import os
 import subprocess
 import unittest
 
-def prepare_resolv(machine, address):
-    machine.execute("hostnamectl set-hostname x0.cockpit.lan")
-    # on Debian, /etc/resolv.conf can be a symbolic link
-    # so instead of overwriting, delete it and write a new one
-    machine.execute("echo -e 'domain cockpit.lan\nsearch cockpit.lan\nnameserver %s\n' >/etc/resolv2.conf; mv /etc/resolv2.conf /etc/resolv.conf; chattr +i /etc/resolv.conf" % address)
+RESOLV_SCRIPT = """
+set -e
+# HACK: Racing with operating systems reading/updating resolv.conf and
+# the fact that resolv.conf can be a symbolic link. Avoid failures like:
+# chattr: Operation not supported while reading flags on /etc/resolv.conf
+for x in 1 2 3 4 5; do
+    hostnamectl set-hostname x0.cockpit.lan
+    printf 'domain cockpit.lan\nsearch cockpit.lan\nnameserver {address}\n' >/etc/resolv2.conf
+    mv /etc/resolv2.conf /etc/resolv.conf
+    if chattr +i /etc/resolv.conf; then
+        break
+    else
+        sleep $x
+    fi
+done
+"""
 
-@unittest.skipIf("atomic" in os.environ.get("TEST_OS", ""), "atomic: missing bind-utils")
+def prepare_resolv(machine, address):
+    machine.execute(script=RESOLV_SCRIPT.format(address=address))
+
+@skipImage("No realmd available", "continuous-atomic", "fedora-atomic", "rhel-atomic")
+@skipImage("No freeipa available", "debian-8")
 class TestRealms(MachineCase):
     additional_machines = {
         'ipa': { 'machine': { 'image': 'ipa' } }
@@ -41,6 +56,8 @@ class TestRealms(MachineCase):
         m = self.machine
         b = self.browser
 
+        self.login_and_go("/system")
+
         # Use the FreeIPA instance as the DNS server
         prepare_resolv(m, self.machines['ipa'].address)
 
@@ -48,8 +65,6 @@ class TestRealms(MachineCase):
         # https://bugzilla.redhat.com/show_bug.cgi?id=1071356#c11
         #
         wait(lambda: m.execute("nslookup -type=SRV _ldap._tcp.cockpit.lan"))
-
-        self.login_and_go("/system")
 
         def wait_number_domains(n):
             if n == 0:
@@ -113,6 +128,11 @@ class TestRealms(MachineCase):
         b.click(".realms-op-cancel")
         b.wait_popdown("realms-op")
 
+        # HACK sssd regression
+        # https://github.com/cockpit-project/cockpit/issues/5142
+        # https://bugzilla.redhat.com/show_bug.cgi?id=1380953
+        self.allow_journal_messages('.*denied.*{ getattr } for.*comm="sssd" name="/".*')
+
     def testNotSupported(self):
         m = self.machine
         b = self.browser
@@ -125,6 +145,8 @@ class TestRealms(MachineCase):
 
         m.execute("echo -e '[providers]\nsssd = no\n' >>%s" % realmd_distro_conf)
 
+        self.login_and_go("/system")
+
         # Use the FreeIPA instance as the DNS server
         prepare_resolv(m, self.machines['ipa'].address)
 
@@ -132,8 +154,6 @@ class TestRealms(MachineCase):
         # https://bugzilla.redhat.com/show_bug.cgi?id=1071356#c11
         #
         wait(lambda: m.execute("nslookup -type=SRV _ldap._tcp.cockpit.lan"))
-
-        self.login_and_go("/system")
 
         # Join cockpit.lan
         b.click("#system-info-domain a")
@@ -145,24 +165,8 @@ class TestRealms(MachineCase):
         b.click(".realms-op-apply")
         b.wait_text(".realms-op-error", "Joining this domain is not supported")
 
-KRB5_TEMPLATE = """
-[logging]
- default = FILE:%(dir)s/krb5.log
-[libdefaults]
- dns_lookup_realm = false
- default_realm = COCKPIT.LAN
- rdns = false
-[realms]
- COCKPIT.LAN = {
-   kdc = %(addr)s
-   master_kdc = %(addr)s
- }
-[domain_realm]
- %(addr)s = COCKPIT.LAN
-"""
-
 JOIN_SCRIPT = """
-set -e
+set -ex
 # HACK: https://bugzilla.redhat.com/show_bug.cgi?id=1071356#c11
 for x in 1 2 3 4 5 6 7 8 9 10; do
     if nslookup -type=SRV _ldap._tcp.cockpit.lan; then
@@ -171,6 +175,7 @@ for x in 1 2 3 4 5 6 7 8 9 10; do
         sleep $x
     fi
 done
+
 if ! echo '%(password)s' | realm join -U admin cockpit.lan; then
     journalctl -u realmd.service
 fi
@@ -179,10 +184,20 @@ fi
 echo '%(password)s' | kinit admin@COCKPIT.LAN
 curl --insecure -s --negotiate -u : https://f0.cockpit.lan/ipa/json --header 'Referer: https://f0.cockpit.lan/ipa' --header "Content-Type: application/json" --header "Accept: application/json" --data '{"params": [["HTTP/x0.cockpit.lan@COCKPIT.LAN"], {"raw": false, "all": false, "version": "2.101", "force": true, "no_members": false}], "method": "service_add", "id": 0}'
 ipa-getkeytab -q -s f0.cockpit.lan -p HTTP/x0.cockpit.lan -k /etc/krb5.keytab
+
+# HACK: https://bugs.freedesktop.org/show_bug.cgi?id=98479
+if ! grep -q 'services.*nss' /etc/sssd/sssd.conf; then
+    sed -i 's/^services = sudo, ssh$/services = sudo, ssh, nss, pam/' /etc/sssd/sssd.conf
+    systemctl restart sssd
+fi
+
+# This needs to work
+getent passwd admin@cockpit.lan
 """
 
 # This is here because our test framework can't run ipa VM's twice
-@unittest.skipIf("atomic" in os.environ.get("TEST_OS", ""), "atomic: missing bind-utils")
+@skipImage("No realmd available", "continuous-atomic", "fedora-atomic", "rhel-atomic")
+@skipImage("No freeipa available", "debian-8")
 class TestKerberos(MachineCase):
     additional_machines = {
         'ipa': { 'machine': { 'image': 'ipa' } }

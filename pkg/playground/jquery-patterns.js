@@ -1,8 +1,12 @@
-require([
-    'jquery',
-    'playground/patterns',
-], function($) {
+var $ = require("jquery");
+$(function() {
     "use strict";
+
+    require("patterns");
+
+    require("page.css");
+    require("listing.css");
+    require("table.css");
 
     $(document).ready(function() {
         $("body").show();

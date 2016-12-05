@@ -1,6 +1,11 @@
-@import url('plot.css');
-@import url("term.css");
-@import url("journal.css");
+@import "/page.css";
+
+@import "/console.css";
+@import "/journal.css";
+@import "/plot.css";
+@import "/table.css";
+
+@import "./timer.css";
 
 a.disabled {
     text-decoration: none;
@@ -162,19 +167,36 @@ a.disabled {
 #sich-note-2 {
     margin: 0;
 }
+#shutdown-dialog td {
+  padding-right: 20px;
+  vertical-align: top;
+}
 
-#shutdown-message {
+#shutdown-dialog .opt {
+  padding: 1px 10px;
+}
+
+#shutdown-dialog .dropdown {
+  min-width: 150px;
+}
+
+#shutdown-group {
+  overflow: visible;
+}
+
+#shutdown-dialog textarea {
     resize: none;
     margin-bottom: 10px;
 }
 
-#shutdown-time input {
-    width: 3em;
+#shutdown-dialog input {
     display: inline;
+    width: 10em;
 }
 
-#shutdown-time span {
-    font-weight: bold;
+#shutdown-dialog .shutdown-hours,
+#shutdown-dialog .shutdown-minutes {
+    width: 3em;
 }
 
 #system_information_ssh_keys .list-group-item {
@@ -206,7 +228,7 @@ a.disabled {
 
 .service-unit-data {
     text-align: right;
-    white-space: nowrap;{{#HasFailed}}color:red;{{/HasFailed}}
+    white-space: nowrap;
 }
 
 .service-unit-failed {

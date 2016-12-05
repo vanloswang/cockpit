@@ -21,12 +21,19 @@
 #define __COCKPIT_SYSTEM_H__
 
 #include <glib.h>
+#include "cockpitjson.h"
 
 G_BEGIN_DECLS
 
 GHashTable *         cockpit_system_load_os_release            (void);
 
 GBytes *             cockpit_system_random_nonce               (gsize length);
+
+GHashTable *         cockpit_system_load_os_release            (void);
+
+const gchar **       cockpit_system_os_release_fields          (void);
+
+guint64              cockpit_system_process_start_time         (void);
 
 G_END_DECLS
 

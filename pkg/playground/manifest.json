@@ -1,5 +1,8 @@
 {
-    "version": 0,
+    "version": "@VERSION@",
+    "requires": {
+	"cockpit": "122"
+    },
 
     "tools": {
         "patterns": {
@@ -8,6 +11,9 @@
         },
         "react-patterns": {
             "label": "React Patterns"
+        },
+        "translate": {
+            "label": "Translating"
         }
     }
 }

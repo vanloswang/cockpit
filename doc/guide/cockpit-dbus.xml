@@ -11,7 +11,7 @@
     <para>Cockpit allows access to DBus services via this API.</para>
   </refsynopsisdiv>
 
-  <refsection>
+  <refsection id="cockpit-dbus-types">
     <title>DBus Types</title>
     <para>DBus values are represented as javascript values and objects as follows:</para>
 
@@ -139,6 +139,16 @@ client = cockpit.dbus(name, [options])
     </variablelist>
   </refsection>
 
+  <refsection id="cockpit-dbus-wait">
+    <title>client.wait()</title>
+<programlisting>
+proxy = client.wait([callback])
+</programlisting>
+
+    <para>Returns a <code>promise</code> that is ready when the client is ready, or fails if the
+      client closes. If a <code>callback</code> is specified, it is attached to the promise.</para>
+  </refsection>
+
   <refsection id="cockpit-dbus-close">
     <title>client.close()</title>
 <programlisting>
@@ -179,8 +189,14 @@ $(client).on("owner", function(event, owner) { ... })
       the client.</para>
   </refsection>
 
+  <refsection id="cockpit-dbus-unique-name">
+    <title>client.unique_name</title>
+    <para>The unique DBus name of the client. Initially null, and becomes valid once the
+      the client is ready.</para>
+  </refsection>
+
   <refsection id="cockpit-dbus-proxy">
-    <title>client.proxy</title>
+    <title>client.proxy()</title>
 <programlisting>
 proxy = client.proxy([interface, path], [options])
 </programlisting>
@@ -392,7 +408,7 @@ $(proxy).on("signal", function(event, name, args) {
   </refsection>
 
   <refsection id="cockpit-dbus-proxies">
-    <title>client.proxies</title>
+    <title>client.proxies()</title>
 <programlisting>
 proxies = client.proxies([interface], [path_namespace], [options])
 </programlisting>
@@ -668,7 +684,7 @@ subscription.remove()
   </refsection>
 
   <refsection id="cockpit-dbus-watch">
-    <title>client.watch</title>
+    <title>client.watch()</title>
 <programlisting>
 watch = client.watch(path)
 watch = client.watch({ "path_namespace": path_namespace, "interface": interface })
@@ -837,23 +853,53 @@ client.onmeta = function(ev, data) { ... }
     <para>The <code>data</code> has the following form:</para>
 
 <programlisting>
-{
+  {
       "org.Interface": {
           "methods": {
-              "Method1": { },
+              "Method1": {
+                  "in": [ "s", "v" ],
+                  "out": [ "i" ]
+              },
               "Method2": { }
           },
+          "signals": {
+              "Signal": {
+                  "in": [ "b", "s" ]
+              }
+          },
           "properties": {
-              "Prop1": { "flags": "rw" },
-              "Prop2": { "flags": "r" }
+              "Prop1": {
+                  "flags": "rw",
+                  "type": "s"
+              },
+              "Prop2": {
+                  "flags": "r",
+                  "type": "b"
+              }
           }
       }
-}
+  }
 </programlisting>
 
     <para>Multiple interfaces may be present, each of which may have methods and properties.
       This is emitted before the first <link linkend="cockpit-dbus-proxy"><code>client.onnotify</code></link>
       event for the relevant interface.</para>
+  </refsection>
+
+  <refsection id="cockpit-dbus-meta">
+    <title>client.meta()</title>
+<programlisting>
+client.meta(data)
+</programlisting>
+    <para>Populate DBus introspection metadata about DBus interfaces. Usually this metadata
+      is automatically introspected from the DBus services called by the <code>client</code>,
+      but in certain cases it is useful to populate this info from javascript code. One such
+      case is when exporting a DBus service from javascript.</para>
+
+    <para>The <link linkend="cockpit-dbus-onmeta"><code>client.onmeta</code></link> event will
+      be emitted by this method call. It's documentation includes information about the form
+      of the <code>data</code>.</para>
+
   </refsection>
 
   <refsection id="cockpit-dbus-variant">

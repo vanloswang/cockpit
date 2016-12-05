@@ -42,6 +42,7 @@
 #include "common/cockpitjson.h"
 #include "common/cockpitlog.h"
 #include "common/cockpitpipetransport.h"
+#include "common/cockpitsystem.h"
 #include "common/cockpittest.h"
 #include "common/cockpitunixfd.h"
 #include "common/cockpitwebresponse.h"
@@ -94,9 +95,12 @@ static void
 send_init_command (CockpitTransport *transport)
 {
   const gchar *checksum;
-  const gchar *name;
   JsonObject *object;
+  JsonObject *block;
+  GHashTable *os_release;
+  gchar **names;
   GBytes *bytes;
+  gint i;
 
   object = json_object_new ();
   json_object_set_string_member (object, "command", "init");
@@ -106,10 +110,20 @@ send_init_command (CockpitTransport *transport)
   if (checksum)
     json_object_set_string_member (object, "checksum", checksum);
 
-  /* Happens when we're in --interact mode */
-  name = cockpit_dbus_internal_name ();
-  if (name)
-    json_object_set_string_member (object, "bridge-dbus-name", name);
+  /* This is encoded as an object to allow for future expansion */
+  block = json_object_new ();
+  names = cockpit_packages_get_names (packages);
+  for (i = 0; names && names[i] != NULL; i++)
+    json_object_set_null_member (block, names[i]);
+  json_object_set_object_member (object, "packages", block);
+  g_free (names);
+
+  os_release = cockpit_system_load_os_release ();
+  block = cockpit_json_from_hash_table (os_release,
+                                        cockpit_system_os_release_fields ());
+  if (block)
+    json_object_set_object_member (object, "os-release", block);
+  g_hash_table_unref (os_release);
 
   bytes = cockpit_json_write_bytes (object);
   json_object_unref (object);
@@ -363,7 +377,7 @@ run_bridge (const gchar *interactive,
   gboolean terminated = FALSE;
   gboolean interupted = FALSE;
   gboolean closed = FALSE;
-  gboolean init_received = FALSE;
+  const gchar *init_host = NULL;
   CockpitPortal *super = NULL;
   CockpitPortal *pcp = NULL;
   gpointer polkit_agent = NULL;
@@ -441,7 +455,7 @@ run_bridge (const gchar *interactive,
   if (interactive)
     {
       /* Allow skipping the init message when interactive */
-      init_received = TRUE;
+      init_host = "localhost";
       transport = cockpit_interact_transport_new (0, outfd, interactive);
     }
   else
@@ -461,10 +475,10 @@ run_bridge (const gchar *interactive,
 
   pcp = cockpit_portal_new_pcp (transport);
 
-  bridge = cockpit_bridge_new (transport, payload_types, init_received);
+  bridge = cockpit_bridge_new (transport, payload_types, init_host);
   cockpit_dbus_user_startup (pwd);
   cockpit_dbus_setup_startup ();
-  cockpit_dbus_environment_startup ();
+  cockpit_dbus_process_startup ();
 
   g_free (pwd);
   pwd = NULL;

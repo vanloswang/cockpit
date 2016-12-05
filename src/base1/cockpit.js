@@ -17,6 +17,13 @@
  * along with Cockpit; If not, see <http://www.gnu.org/licenses/>.
  */
 
+var url_root;
+
+try {
+    // Sometimes this throws a SecurityError such as during testing
+    url_root = window.localStorage.getItem('url-root');
+} catch(e) { }
+
 var mock = mock || { };
 
 var phantom_checkpoint = phantom_checkpoint || function () { };
@@ -24,9 +31,15 @@ var phantom_checkpoint = phantom_checkpoint || function () { };
 (function() {
 "use strict";
 
+var cockpit = { };
+event_mixin(cockpit, { });
+
 if (typeof window.debugging === "undefined") {
-    window.debugging = window.sessionStorage["debugging"] ||
-                       window.localStorage["debugging"];
+    try {
+        // Sometimes this throws a SecurityError such as during testing
+        window.debugging = window.sessionStorage["debugging"] ||
+                           window.localStorage["debugging"];
+    } catch(e) { }
 }
 
 function in_array(array, val) {
@@ -248,18 +261,46 @@ function event_mixin(obj, handlers) {
     });
 }
 
-function calculate_url() {
+function calculate_application() {
+    var path = window.location.pathname || "/";
+    var _url_root = url_root;
+    if (window.mock && window.mock.pathname)
+        path = window.mock.pathname;
+    if (window.mock && window.mock.url_root)
+        _url_root = window.mock.url_root;
+
+    if (_url_root && path.indexOf('/' + _url_root) === 0)
+        path = path.replace('/' + _url_root, '') || '/';
+
+    if (path.indexOf("/cockpit/") !== 0 && path.indexOf("/cockpit+") !== 0) {
+        if (path.indexOf("/=") === 0)
+            path = "/cockpit+" + path.split("/")[1];
+        else
+            path = "/cockpit";
+    }
+
+    return path.split("/")[1];
+}
+
+function calculate_url(suffix) {
+    if (!suffix)
+        suffix = "socket";
+    var window_loc = window.location.toString();
+    var _url_root = url_root;
+
     if (window.mock && window.mock.url)
         return window.mock.url;
-    var window_loc = window.location.toString();
-    var path = window.location.pathname || "/";
-    if (path.indexOf("/cockpit") !== 0)
-        path = "/cockpit";
-    var prefix = path.split("/")[1];
+    if (window.mock && window.mock.url_root)
+        _url_root = window.mock.url_root;
+
+    var prefix = calculate_application();
+    if (_url_root)
+        prefix = _url_root + "/" + prefix;
+
     if (window_loc.indexOf('http:') === 0) {
-        return "ws://" + window.location.host + "/" + prefix + "/socket";
+        return "ws://" + window.location.host + "/" + prefix + "/" + suffix;
     } else if (window_loc.indexOf('https:') === 0) {
-        return "wss://" + window.location.host + "/" + prefix + "/socket";
+        return "wss://" + window.location.host + "/" + prefix + "/" + suffix;
     } else {
         transport_debug("Cockpit must be used over http or https");
         return null;
@@ -344,6 +385,7 @@ function ParentWebSocket(parent) {
 /* Private Transport class */
 function Transport() {
     var self = this;
+    self.application = calculate_application();
 
     /* We can trigger events */
     event_mixin(self, { });
@@ -664,7 +706,9 @@ function Channel(options) {
     event_mixin(self, { });
 
     var transport;
-    var valid = true;
+    var ready = null;
+    var closed = null;
+    var waiting = null;
     var received_done = false;
     var sent_done = false;
     var id = null;
@@ -678,7 +722,7 @@ function Channel(options) {
     var queue = [ ];
 
     /* Handy for callers, but not used by us */
-    self.valid = valid;
+    self.valid = true;
     self.options = options;
     self.binary = binary;
     self.id = id;
@@ -695,16 +739,28 @@ function Channel(options) {
     }
 
     function on_close(data) {
-        self.valid = valid = false;
+        closed = data;
+        self.valid = false;
         if (transport && id)
             transport.unregister(id);
-        self.dispatchEvent("close", data);
+        if (closed.message)
+            console.warn(closed.message);
+        self.dispatchEvent("close", closed);
+        if (waiting)
+            waiting.resolve(closed);
+    }
+
+    function on_ready(data) {
+        ready = data;
+        self.dispatchEvent("ready", ready);
     }
 
     function on_control(data) {
         if (data.command == "close") {
             on_close(data);
             return;
+        } else if (data.command == "ready") {
+            on_ready(data);
         }
 
         var done = data.command === "done";
@@ -731,7 +787,7 @@ function Channel(options) {
 
     ensure_transport(function(trans) {
         transport = trans;
-        if (!valid)
+        if (closed)
             return;
 
         id = transport.next_channel();
@@ -759,6 +815,8 @@ function Channel(options) {
                 command.binary = "base64";
                 base64 = true;
             }
+        } else {
+            delete command.binary;
         }
 
         transport.send_control(command);
@@ -776,7 +834,7 @@ function Channel(options) {
     });
 
     self.send = function send(message) {
-        if (!valid)
+        if (closed)
             console.warn("sending message on closed channel");
         else if (sent_done)
             console.warn("sending message after done");
@@ -799,8 +857,30 @@ function Channel(options) {
             transport.send_control(options);
     };
 
+    self.wait = function wait(callback) {
+        if (!waiting) {
+            waiting = cockpit.defer();
+            if (closed) {
+                waiting.reject(closed);
+            } else if (ready) {
+                waiting.resolve(ready);
+            } else {
+                self.addEventListener("ready", function(event, data) {
+                    waiting.resolve(data);
+                });
+                self.addEventListener("close", function(event, data) {
+                    waiting.reject(data);
+                });
+            }
+        }
+        var promise = waiting.promise;
+        if (callback)
+            promise.then(callback, callback);
+        return promise;
+    };
+
     self.close = function close(options) {
-        if (!valid)
+        if (closed)
             return;
 
         if (!options)
@@ -862,7 +942,7 @@ function Channel(options) {
 
     self.toString = function toString() {
         var host = options["host"] || "localhost";
-        return "[Channel " + (valid ? id : "<invalid>") + " -> " + host + "]";
+        return "[Channel " + (self.valid ? id : "<invalid>") + " -> " + host + "]";
     };
 }
 
@@ -885,7 +965,7 @@ function resolve_path_dots(parts) {
     return out;
 }
 
-function basic_scope(cockpit, jquery) {
+function factory() {
 
     cockpit.channel = function channel(options) {
         return new Channel(options);
@@ -895,6 +975,11 @@ function basic_scope(cockpit, jquery) {
         event_mixin(obj, { });
         return obj;
     };
+
+    cockpit.extend = extend;
+
+    /* These can be filled in by loading ../manifests.js */
+    cockpit.manifests = { };
 
     /* ------------------------------------------------------------
      * Text Encoding
@@ -1032,6 +1117,11 @@ function basic_scope(cockpit, jquery) {
         origin: transport_origin,
         options: { },
         uri: calculate_url,
+        application: function () {
+            if (!default_transport || window.mock)
+                return calculate_application();
+            return default_transport.application;
+        },
     };
 
     /* ------------------------------------------------------------------------------------
@@ -1458,6 +1548,58 @@ function basic_scope(cockpit, jquery) {
     };
 
     /* ---------------------------------------------------------------------
+     * Storage Helper.
+     *
+     * Use application to prefix data stored in browser storage
+     * with helpers for compatibility.
+     */
+    function StorageHelper(storage) {
+        var self = this;
+
+        self.prefixedKey = function (key) {
+            return cockpit.transport.application() + ":" + key;
+        };
+
+        self.getItem = function (key, both) {
+            var value = storage.getItem(self.prefixedKey(key));
+            if (!value && both)
+                value = storage.getItem(key);
+            return value;
+        };
+
+        self.setItem = function (key, value, both) {
+            storage.setItem(self.prefixedKey(key), value);
+            if (both)
+                storage.setItem(key, value);
+        };
+
+        self.removeItem = function(key, both) {
+            storage.removeItem(self.prefixedKey(key));
+            if (both)
+                storage.removeItem(key);
+        };
+
+        /* Instead of clearing, purge anything that isn't prefixed with an application
+         * and anything prefixed with our application.
+         */
+        self.clear = function(full) {
+            var i = 0;
+            while (i < storage.length) {
+                var k = storage.key(i);
+                if (full && k.indexOf("cockpit") !== 0)
+                    storage.removeItem(k);
+                else if (k.indexOf(cockpit.transport.application()) === 0)
+                    storage.removeItem(k);
+                else
+                    i++;
+            }
+        };
+    }
+
+    cockpit.localStorage = new StorageHelper(window.localStorage);
+    cockpit.sessionStorage = new StorageHelper(window.sessionStorage);
+
+    /* ---------------------------------------------------------------------
      * Shared data cache.
      *
      * We cannot use sessionStorage when keeping lots of data in memory and
@@ -1479,8 +1621,9 @@ function basic_scope(cockpit, jquery) {
         return storage;
     }
 
-    function StorageCache(key, provider, consumer) {
+    function StorageCache(org_key, provider, consumer) {
         var self = this;
+        var key = cockpit.transport.application() + ":" + org_key;
 
         /* For triggering events and ownership */
         var trigger = window.sessionStorage;
@@ -1494,7 +1637,7 @@ function basic_scope(cockpit, jquery) {
         function callback() {
             /* Only run the callback if we have a result */
             if (storage[key] !== undefined) {
-                if (consumer(storage[key], key) === false)
+                if (consumer(storage[key], org_key) === false)
                     self.close();
             }
         }
@@ -1521,7 +1664,7 @@ function basic_scope(cockpit, jquery) {
 
         self.claim = function claim() {
             if (!source)
-                source = provider(result, key);
+                source = provider(result, org_key);
         };
 
         function unclaim() {
@@ -2135,8 +2278,14 @@ function basic_scope(cockpit, jquery) {
     }
 
     cockpit.logout = function logout(reload) {
-        window.sessionStorage.clear();
-        window.localStorage.removeItem('login-data');
+        /* fully clear session storage */
+        cockpit.sessionStorage.clear(true);
+
+        /* Only clean application data from localStorage,
+         * except for login-data. Clear that completely */
+        cockpit.localStorage.removeItem('login-data', true);
+        cockpit.localStorage.clear(false);
+
         if (reload !== false)
             reload_after_disconnect = true;
         ensure_transport(function(transport) {
@@ -2225,6 +2374,13 @@ function basic_scope(cockpit, jquery) {
 
     function Location() {
         var self = this;
+        var application = cockpit.transport.application();
+        self.url_root = url_root || "";
+        if (application.indexOf("cockpit+=") === 0) {
+            if (self.url_root)
+                self.url_root += '/';
+            self.url_root = self.url_root + application.replace("cockpit+", '');
+        }
 
         var href = get_window_location_hash();
         var options = { };
@@ -2232,7 +2388,11 @@ function basic_scope(cockpit, jquery) {
 
         function decode_path(input) {
             var parts = input.split('/').map(decodeURIComponent);
-            var result;
+            var result, i, pre_parts = [];
+
+            if (self.url_root)
+                pre_parts = self.url_root.split('/').map(decodeURIComponent);
+
             if (input && input[0] !== "/") {
                 result = [].concat(path);
                 result.pop();
@@ -2240,16 +2400,29 @@ function basic_scope(cockpit, jquery) {
             } else {
                 result = parts;
             }
-            return resolve_path_dots(result);
+
+            result = resolve_path_dots(result);
+            for (i = 0; i < pre_parts.length; i++) {
+                if (pre_parts[i] !== result[i])
+                    break;
+            }
+            if (i == pre_parts.length)
+                result.splice(0, pre_parts.length);
+
+            return result;
         }
 
-        function encode(path, options) {
+        function encode(path, options, with_root) {
             if (typeof path == "string")
                 path = decode_path(path, self.path);
+
             var href = "/" + path.map(encodeURIComponent).join("/");
+            if (with_root && self.url_root && href.indexOf("/" + self.url_root + "/" !== 0))
+                href = "/" + self.url_root + href;
 
             /* Undo unnecessary encoding of these */
             href = href.replace("%40", "@");
+            href = href.replace("%3D", "=");
 
             var i, opt, value, query = [];
             function push_option(v) {
@@ -2372,7 +2545,7 @@ function basic_scope(cockpit, jquery) {
 
     cockpit.jump = function jump(path, host) {
         if (is_array(path))
-            path = "/" + path.map(encodeURIComponent).join("/").replace("%40", "@");
+            path = "/" + path.map(encodeURIComponent).join("/").replace("%40", "@").replace("%3D", "=");
         else
             path = "" + path;
         var options = { command: "jump", location: path, host: host };
@@ -2548,11 +2721,11 @@ function basic_scope(cockpit, jquery) {
             console.debug.apply(console, arguments);
     }
 
-    function DBusError(arg) {
+    function DBusError(arg, arg1) {
         if (typeof(arg) == "string") {
             this.problem = arg;
             this.name = null;
-            this.message = cockpit.message(arg);
+            this.message = arg1 || cockpit.message(arg);
         } else {
             this.problem = null;
             this.name = arg[0];
@@ -2757,11 +2930,11 @@ function basic_scope(cockpit, jquery) {
 
         client.subscribe({ "path": path, "interface": iface }, signal, options.subscribe !== false);
 
-        function waited() {
+        function waited(ex) {
             if (valid)
                 waits.resolve();
             else
-                waits.reject();
+                waits.reject(ex);
         }
 
         /* If watching then do a proper watch, otherwise object is done */
@@ -2848,8 +3021,10 @@ function basic_scope(cockpit, jquery) {
             extend(args, options);
         }
         args.payload = "dbus-json3";
-        args.name = name;
+        if (name)
+            args.name = name;
         self.options = options;
+        self.unique_name = null;
 
         dbus_debug("dbus open: ", args);
 
@@ -2862,6 +3037,9 @@ function basic_scope(cockpit, jquery) {
         var closed;
 
         self.constructors = { "*": DBusProxy };
+
+        /* Allows waiting on the channel if necessary */
+        self.wait = channel.wait;
 
         function ensure_cache() {
             if (!cache)
@@ -2877,7 +3055,7 @@ function basic_scope(cockpit, jquery) {
                 return false;
             if (match.member && signal[2] !== match.member)
                 return false;
-            if (match.arg0 && signal[3] !== match.arg0)
+            if (match.arg0 && (!signal[3] || signal[3][0] !== match.arg0))
                 return false;
             return true;
         }
@@ -2960,6 +3138,21 @@ function basic_scope(cockpit, jquery) {
             self.dispatchEvent("meta", data);
         }
 
+        self.meta = function(data, options) {
+            if (!channel || !channel.valid)
+                return;
+
+            var message = extend({ }, options, {
+                "meta": data
+            });
+
+            var payload = JSON.stringify(message);
+            dbus_debug("dbus:", payload);
+            channel.send(payload);
+
+            meta(data);
+        };
+
         function notify(data) {
             ensure_cache();
             var path, iface, props;
@@ -2982,7 +3175,7 @@ function basic_scope(cockpit, jquery) {
             var id, outstanding = calls;
             calls = { };
             for (id in outstanding) {
-                outstanding[id].reject(new DBusError(closed));
+                outstanding[id].reject(new DBusError(closed, options.message));
             }
             self.dispatchEvent("close", options);
         }
@@ -2998,14 +3191,21 @@ function basic_scope(cockpit, jquery) {
                 close_perform(options);
         };
 
+        function on_ready(event, message) {
+            dbus_debug("dbus ready:", options);
+            self.unique_name = message["unique-name"];
+        }
+
         function on_close(event, options) {
             dbus_debug("dbus close:", options);
+            channel.removeEventListener("ready", on_ready);
             channel.removeEventListener("message", on_message);
             channel.removeEventListener("close", on_close);
             channel = null;
             close_perform(options);
         }
 
+        channel.addEventListener("control", on_ready);
         channel.addEventListener("message", on_message);
         channel.addEventListener("close", on_close);
 
@@ -3015,16 +3215,10 @@ function basic_scope(cockpit, jquery) {
             var dfd = cockpit.defer();
             var id = String(last_cookie);
             last_cookie++;
-            var method_call = {
+            var method_call = extend({ }, options, {
                 "call": [ path, iface, method, args || [] ],
                 "id": id
-            };
-            if (options) {
-                if (options.type)
-                    method_call.type = options.type;
-                if (options.flags !== undefined)
-                    method_call.flags = options.flags;
-            }
+            });
 
             var msg = JSON.stringify(method_call);
             dbus_debug("dbus:", msg);
@@ -3039,9 +3233,22 @@ function basic_scope(cockpit, jquery) {
             return dfd.promise;
         };
 
+        self.signal = function signal(path, iface, member, args, options) {
+            if (!channel || !channel.valid)
+                return;
+
+            var message = extend({ }, options, {
+                "signal": [ path, iface, member, args || [] ]
+            });
+
+            var payload = JSON.stringify(message);
+            dbus_debug("dbus:", payload);
+            channel.send(payload);
+        };
+
         this.subscribe = function subscribe(match, callback, rule) {
             var subscription = {
-                match: match || { },
+                match: extend({ }, match),
                 callback: callback
             };
 
@@ -3078,7 +3285,7 @@ function basic_scope(cockpit, jquery) {
         self.watch = function watch(path) {
             var match;
             if (is_plain_object(path))
-                match = path;
+                match = extend({ }, path);
             else
                 match = { path: String(path) };
 
@@ -3439,15 +3646,53 @@ function basic_scope(cockpit, jquery) {
         cockpit.language = lang;
     };
 
-    cockpit.translate = function translate(el) {
-        var list = (el || document).querySelectorAll("[translatable=\"yes\"]");
-        var e, translated, i, len;
-        if (list) {
-            for (i = 0, len = list.length; i < len; i++) {
-                e = list[i];
-                translated = cockpit.gettext(e.getAttribute("context"), e.textContent);
-                e.removeAttribute("translatable");
-                e.textContent = translated;
+    cockpit.translate = function translate(/* ... */) {
+	var what;
+
+        /* Called without arguments, entire document */
+	if (arguments.length === 0)
+            what = [ document ];
+
+        /* Called with a single array like argument */
+        else if (arguments.length === 1 && arguments[0].length)
+            what = arguments[0];
+
+        /* Called with 1 or more element arguments */
+        else
+            what = arguments;
+
+        /* Translate all the things */
+        var w, wlen, val, i, ilen, t, tlen, list, tasks, el;
+	for (w = 0, wlen = what.length; w < wlen; w++) {
+
+            /* The list of things to translate */
+            list = null;
+            if (what[w].querySelectorAll)
+                list = what[w].querySelectorAll("[translatable], [translate]");
+            if (!list)
+                continue;
+
+            /* Each element */
+            for (i = 0, ilen = list.length; i < ilen; i++) {
+                el = list[i];
+
+                val = el.getAttribute("translate") || el.getAttribute("translatable") || "yes";
+                if (val == "no")
+                    continue;
+
+                /* Each thing to translate */
+                tasks = val.split(" ");
+                val = el.getAttribute("translate-context") || el.getAttribute("context");
+                for (t = 0, tlen = tasks.length; t < tlen; t++) {
+                    if (tasks[t] == "yes" || tasks[t] == "translate")
+                        el.textContent = cockpit.gettext(val, el.textContent);
+                    else if (tasks[t])
+                        el.setAttribute(tasks[t], cockpit.gettext(val, el.getAttribute(tasks[t]) || ""));
+                }
+
+                /* Mark this thing as translated */
+                el.removeAttribute("translatable");
+                el.removeAttribute("translate");
             }
         }
     };
@@ -4097,23 +4342,12 @@ function basic_scope(cockpit, jquery) {
         };
     }
 
+    return cockpit;
 } /* scope end */
 
 /*
  * Register this script as a module and/or with globals
  */
-
-var cockpit = { };
-event_mixin(cockpit, { });
-
-var basics = false;
-function factory() {
-    if (!basics) {
-        basic_scope(cockpit);
-        basics = true;
-    }
-    return cockpit;
-}
 
 var self_module_id;
 

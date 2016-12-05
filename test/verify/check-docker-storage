@@ -41,10 +41,14 @@ def can_manage(machine, vg):
     if machine.image in [ "rhel-atomic", "fedora-atomic", "continuous-atomic" ]:
         return True
 
+    # Fedora 25, too
+    if machine.image in [ "fedora-25", "fedora-testing" ]:
+        return True
+
     # Fedora 24 has new enough "atomic", but the OS is not in a volume
     # group by default.  We can manage it when we explicitly configure
     # a dedicated volume group.
-    if machine.image == "fedora-24":
+    if machine.image in [ "fedora-24" ]:
         return vg != ""
 
     # Everyone else either has no "atomic" at all or a version that is
@@ -60,8 +64,8 @@ def initially_loopbacked(machine):
     if "atomic" in machine.image:
         return False
 
-    # Debian uses the overlayfs driver by default.
-    if "debian" in machine.image:
+    # Debian and Ubuntu use the overlayfs driver by default.
+    if "debian" in machine.image or "ubuntu" in machine.image:
         return False
 
     # The rest don't have space in the root volume group, or don't
@@ -213,9 +217,8 @@ class TestDockerStorage(MachineCase):
         b.wait_not_in_text("#storage-drives", "DISK2")
         check_loopback(False)
 
+    @skipImage("Switching vgroups not tested on loopbacked docker storage", "continuous-atomic", "debian-unstable", "fedora-atomic", "rhel-atomic", "ubuntu-1604")
     def testDevmapperVGroup(self):
-        if not initially_loopbacked(self.machine):
-            return unittest.skip("Switching vgroups not yet tested")
         self.testDevmapper("dockah")
 
 if __name__ == '__main__':

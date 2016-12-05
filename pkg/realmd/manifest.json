@@ -1,4 +1,7 @@
 {
-    "version": 0,
-    "name": "domain"
+    "version": "@VERSION@",
+    "name": "domain",
+    "requires": {
+	"cockpit": "122"
+    }
 }

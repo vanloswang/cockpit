@@ -17,14 +17,18 @@
  * along with Cockpit; If not, see <http://www.gnu.org/licenses/>.
  */
 
-define([
-    "jquery",
-    "base1/cockpit",
-    "./mustache",
-    "./client",
-    "./util",
-    "./patterns",
-], function($, cockpit, Mustache, client, util) {
+var $ = require("jquery");
+$(function() {
+    "use strict";
+
+    var cockpit = require("cockpit");
+
+    var Mustache = require("mustache");
+    require("patterns");
+
+    var client = require("./client");
+    var util = require("./util");
+
     var _ = cockpit.gettext;
 
     /* RUN IMAGE DIALOG */
@@ -154,9 +158,24 @@ define([
 
         // from https://github.com/dotcloud/docker/blob/master/pkg/namesgenerator/names-generator.go
 
-        var left = [ "happy", "jolly", "dreamy", "sad", "angry", "pensive", "focused", "sleepy", "grave", "distracted", "determined", "stoic", "stupefied", "sharp", "agitated", "cocky", "tender", "goofy", "furious", "desperate", "hopeful", "compassionate", "silly", "lonely", "condescending", "naughty", "kickass", "drunk", "boring", "nostalgic", "ecstatic", "insane", "cranky", "mad", "jovial", "sick", "hungry", "thirsty", "elegant", "backstabbing", "clever", "trusting", "loving", "suspicious", "berserk", "high", "romantic", "prickly", "evil" ];
+        var left = [
+            "happy", "jolly", "dreamy", "sad", "angry", "pensive", "focused", "sleepy",
+            "grave", "distracted", "determined", "stoic", "stupefied", "sharp", "agitated",
+            "cocky", "tender", "goofy", "furious", "desperate", "hopeful", "compassionate",
+            "silly", "lonely", "condescending", "naughty", "kickass", "drunk", "boring",
+            "nostalgic", "ecstatic", "insane", "cranky", "mad", "jovial", "sick", "hungry",
+            "thirsty", "elegant", "backstabbing", "clever", "trusting", "loving", "suspicious",
+            "berserk", "high", "romantic", "prickly", "evil"
+        ];
 
-        var right = [ "lovelace", "franklin", "tesla", "einstein", "bohr", "davinci", "pasteur", "nobel", "curie", "darwin", "turing", "ritchie", "torvalds", "pike", "thompson", "wozniak", "galileo", "euclid", "newton", "fermat", "archimedes", "poincare", "heisenberg", "feynman", "hawking", "fermi", "pare", "mccarthy", "engelbart", "babbage", "albattani", "ptolemy", "bell", "wright", "lumiere", "morse", "mclean", "brown", "bardeen", "brattain", "shockley" ];
+        var right = [
+            "lovelace", "franklin", "tesla", "einstein", "bohr", "davinci", "pasteur", "nobel",
+            "curie", "darwin", "turing", "ritchie", "torvalds", "pike", "thompson", "wozniak",
+            "galileo", "euclid", "newton", "fermat", "archimedes", "poincare", "heisenberg",
+            "feynman", "hawking", "fermi", "pare", "mccarthy", "engelbart", "babbage",
+            "albattani", "ptolemy", "bell", "wright", "lumiere", "morse", "mclean", "brown",
+            "bardeen", "brattain", "shockley"
+        ];
 
         function make_name() {
             function ranchoice(array) {
@@ -408,8 +427,8 @@ define([
                 port_internal_editable = true;
 
             var row = $(Mustache.render(template, {
-                host_port_label: _('to host port'),
-                placeholder: _('none'),
+                host_port_label: _("to host port"),
+                placeholder: _("none"),
             }));
             row.children("button.fa-plus").on('click', add_row);
             if (port_internal_editable) {
@@ -464,8 +483,8 @@ define([
                 volume_internal_editable = true;
 
             var row = $(Mustache.render(template, {
-                host_volume_label: _('to host path'),
-                placeholder: _('none')
+                host_volume_label: _("to host path"),
+                placeholder: _("none")
             }));
             row.children("button.fa-plus").on('click', add_row);
             if (volume_internal_editable) {
@@ -517,9 +536,9 @@ define([
                 envvar_internal_editable = true;
 
             var row = $(Mustache.render(template, {
-                envvar_key_label: _('key'),
-                envvar_value_label: _('value'),
-                placeholder: _('none')
+                envvar_key_label: _("key"),
+                envvar_value_label: _("value"),
+                placeholder: _("none")
             }));
             row.children("button.fa-plus").on('click', add_row);
             if (envvar_internal_editable) {
@@ -565,8 +584,8 @@ define([
         function render(containers) {
             var row = $(Mustache.render(template, {
                 containers: container_names,
-                alias_label: _('alias'),
-                placeholder: _('none')
+                alias_label: _("alias"),
+                placeholder: _("none")
             }));
             row.children("button.fa-plus").on('click', add_row);
             row.children("button.pficon-close").on('click', remove_row);

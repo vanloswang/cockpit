@@ -68,7 +68,7 @@ class TestKubernetesLogin(KubernetesContainerCase):
         # Try to login, no api var
         b.open("/")
         b.wait_visible("#login")
-        b.wait_text("#server-name b", "Kubernetes Cockpit")
+        b.wait_text("#server-name", "Kubernetes Cockpit")
         login("admin", "fubar")
         b.wait_in_text("#login-fatal-message", "No kubernetes")
         b.wait_not_visible('#login-button')
@@ -78,7 +78,7 @@ class TestKubernetesLogin(KubernetesContainerCase):
 
         b.open("/")
         b.wait_visible("#login")
-        b.wait_text("#server-name b", "Kubernetes Cockpit")
+        b.wait_text("#server-name", "Kubernetes Cockpit")
         login("admin", "fubar")
         b.wait_in_text("#login-fatal-message", "Couldn't connect to the api")
         b.wait_not_visible('#login-button')
@@ -88,6 +88,7 @@ class TestKubernetesLogin(KubernetesContainerCase):
         self.wait_api_server(port=6443, scheme='https')
 
         b.reload()
+        b.wait_visible("#login")
         login("admin", "bad")
         b.wait_text_not("#login-error-message", "")
         b.wait_visible('#login-button')
@@ -108,9 +109,9 @@ class TestKubernetesLogin(KubernetesContainerCase):
         b.logout()
 
         # Remove authentication stuff
-        m.execute("systemctl stop kube-apiserver")
+        self.stop_kubernetes()
         m.execute("sed -i '/KUBE_API_ARGS=/d' /etc/kubernetes/apiserver")
-        m.execute("systemctl start kube-apiserver")
+        self.start_kubernetes()
         b.reload()
         b.wait_present("#content")
         b.wait_text('#content-user-name', 'Unauthenticated')

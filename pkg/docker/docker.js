@@ -17,12 +17,13 @@
  * along with Cockpit; If not, see <http://www.gnu.org/licenses/>.
  */
 
-define([
-    "jquery",
-    "base1/cockpit",
-    "./term"
-], function($, cockpit, Terminal) {
+(function() {
     "use strict";
+
+    var $ = require("jquery");
+    var cockpit = require("cockpit");
+
+    var Terminal = require("term");
 
     var docker = { };
 
@@ -749,5 +750,15 @@ define([
         return num;
     };
 
-    return docker;
-});
+    /*
+     * Returns the short id of a docker container or image id.
+     */
+    docker.truncate_id = function (id) {
+        var c = id.indexOf(':');
+        if (c >= 0)
+            id = id.slice(c + 1);
+        return id.substr(0, 12);
+    };
+
+    module.exports = docker;
+}());

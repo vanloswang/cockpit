@@ -17,11 +17,13 @@
  * along with Cockpit; If not, see <http://www.gnu.org/licenses/>.
  */
 
-define([
-    "jquery",
-    "base1/cockpit",
-    "docker/util",
-], function($, cockpit, util) {
+(function() {
+    "use strict";
+
+    var $ = require("jquery");
+    var cockpit = require("cockpit");
+    var util = require("./util");
+    var docker = require("./docker");
 
     /* DOCKER CLIENT
      */
@@ -80,6 +82,9 @@ define([
 
         /* Containers we're waiting for an action to complete on */
         this.waiting = { };
+
+        /* images we're currently pulling */
+        this.pulling = [];
 
         var containers_meta = { };
         var containers_by_name = { };
@@ -604,10 +609,39 @@ define([
                 });
         };
 
+        this.pull = function (repo, tag, registry) {
+            var job = {
+                name: repo
+            };
+
+            docker.pull(repo, tag, registry).
+                progress(function(message, progress) {
+                    job.status = progress.status;
+                    if (progress.progressDetail && 'current' in progress.progressDetail && 'total' in progress.progressDetail)
+                        job.progress = progress.progressDetail;
+                    else
+                        delete job.progress;
+                    $(self).trigger("pulling");
+                }).
+                done(function () {
+                    self.pulling = self.pulling.filter(function (j) {
+                        return j !== job;
+                    });
+                    $(self).trigger("pulling");
+                }).
+                fail(function (error) {
+                    job.status = 'Error getting image: ' + error.message;
+                    delete job.progress;
+                    $(self).trigger("pulling");
+                });
+
+           self.pulling.push(job);
+        };
+
         function change_cgroup(directory, cgroup, filename, value) {
             /* TODO: Yup need a nicer way of doing this ... likely systemd once we're geard'd out */
             var path = "/sys/fs/cgroup/" + directory + "/" + cgroup + "/" + filename;
-            var command = "echo '" + value.toFixed(0) + "' > " + path;
+            var command = "if test -f " + path + "; then echo '" + value.toFixed(0) + "' > " + path + "; fi";
             util.docker_debug("changing cgroup:", command);
 
             return cockpit.spawn(["sh", "-c", command], { "superuser": "try", "err": "message" });
@@ -671,7 +705,7 @@ define([
 
     var client;
 
-    return {
+    module.exports = {
         instance: function() {
             if (!client)
                 client = new DockerClient();
@@ -679,4 +713,4 @@ define([
         }
     };
 
-});
+}());

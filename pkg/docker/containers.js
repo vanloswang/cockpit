@@ -17,19 +17,25 @@
  * along with Cockpit; If not, see <http://www.gnu.org/licenses/>.
  */
 
-require([
-    "jquery",
-    "base1/cockpit",
-    "docker/mustache",
-    "docker/client",
-    "docker/overview",
-    "docker/details",
-    "docker/image",
-    "docker/storage",
-    "docker/service",
-    "shell/po",
-], function($, cockpit, Mustache, client, overview, container_details, image_details, storage, service, po) {
-    cockpit.locale(po);
+(function() {
+    "use strict";
+
+    var $ = require("jquery");
+    var cockpit = require("cockpit");
+
+    var Mustache = require("mustache");
+    var service = require("service");
+
+    var client = require("./client");
+    var overview = require("./overview");
+    var container_details = require("./details");
+    var image_details = require("./image");
+    var storage = require("./storage.jsx");
+
+    require("page.css");
+    require("table.css");
+    require("./docker.css");
+
     var _ = cockpit.gettext;
     var C_ = cockpit.gettext;
 
@@ -149,4 +155,4 @@ require([
     }
 
     $(init);
-});
+}());

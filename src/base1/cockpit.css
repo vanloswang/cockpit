@@ -17,8 +17,12 @@
  * along with Cockpit; If not, see <http://www.gnu.org/licenses/>.
  */
 
-@import url("patternfly.css");
-@import url("patternfly-additions.css");
+/*
+ * WARNING: This is a legacy part of cockpit retained for backwards compatibility
+ * Newer code should not include cockpit.css
+ */
+
+@import url('patternfly.css');
 
 a {
     cursor: pointer;
@@ -276,10 +280,13 @@ a {
 
 /* Alert fixups */
 
+/* HACK: word-wrap workaround for long alerts https://github.com/patternfly/patternfly/issues/491 */
+
 .modal-content .alert {
     text-align: left;
     padding-top: 5px;
     padding-bottom: 5px;
+    word-wrap: break-word;
 }
 
 .modal-content .alert .fa {
@@ -969,4 +976,11 @@ input[type=number] {
 .btn.fa-minus,
 .btn.fa-plus {
     padding-top: 4px;
+}
+
+/* Limit dropdown menus to 90% of the viewport size */
+.dropdown-menu {
+    height: auto;
+    overflow-x: hidden;
+    max-height: 90vh;
 }

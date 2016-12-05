@@ -45,6 +45,12 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 
+/* Mock override from cockpitconf.c */
+extern const gchar *cockpit_config_file;
+
+/* Mock override from cockpitwebservice.c */
+extern const gchar *cockpit_ws_default_protocol_header;
+
 #define TIMEOUT 30
 
 #define WAIT_UNTIL(cond) \
@@ -79,6 +85,7 @@ typedef struct {
   WebSocketFlavor web_socket_flavor;
   const char *origin;
   const char *config;
+  const char *forward;
 } TestFixture;
 
 static GString *
@@ -203,13 +210,11 @@ static void
 setup_mock_webserver (TestCase *test,
                       gconstpointer data)
 {
-  const gchar *roots[] = { SRCDIR "/src/ws", NULL };
-
   GError *error = NULL;
   const gchar *user;
 
   /* Zero port makes server choose its own */
-  test->web_server = cockpit_web_server_new (0, NULL, roots, NULL, &error);
+  test->web_server = cockpit_web_server_new (NULL, 0, NULL, NULL, &error);
   g_assert_no_error (error);
 
   user = g_get_user_name ();
@@ -495,6 +500,7 @@ start_web_service_and_create_client (TestCase *test,
 
   /* Matching the above origin */
   cockpit_ws_default_host_header = "127.0.0.1";
+  cockpit_ws_default_protocol_header = fixture ? fixture->forward : NULL;
 
   *service = cockpit_web_service_new (test->creds, NULL);
 
@@ -1112,7 +1118,6 @@ test_unknown_host_key (TestCase *test,
   gchar *knownhosts = g_strdup_printf ("[127.0.0.1]:%d %s", (int)test->ssh_port, MOCK_RSA_KEY);
 
   cockpit_expect_info ("*New connection from*");
-  cockpit_expect_log ("cockpit-protocol", G_LOG_LEVEL_MESSAGE, "*host key for server is not known*");
 
   /* No known hosts */
   cockpit_ws_known_hosts = "/dev/null";
@@ -1305,13 +1310,33 @@ static const TestFixture fixture_bad_origin_hixie76 = {
 static const TestFixture fixture_allowed_origin_rfc6455 = {
   .web_socket_flavor = WEB_SOCKET_FLAVOR_RFC6455,
   .origin = "https://another-place.com",
-  .config = SRCDIR "/src/ws/mock-config.conf"
+  .config = SRCDIR "/src/ws/mock-config/cockpit/cockpit.conf"
 };
 
 static const TestFixture fixture_allowed_origin_hixie76 = {
   .web_socket_flavor = WEB_SOCKET_FLAVOR_HIXIE76,
   .origin = "https://another-place.com:9090",
-  .config = SRCDIR "/src/ws/mock-config.conf"
+  .config = SRCDIR "/src/ws/mock-config/cockpit/cockpit.conf"
+};
+
+static const TestFixture fixture_allowed_origin_proto_header = {
+  .web_socket_flavor = WEB_SOCKET_FLAVOR_HIXIE76,
+  .origin = "https://127.0.0.1",
+  .forward = "https",
+  .config = SRCDIR "/src/ws/mock-config/cockpit/cockpit-alt.conf"
+};
+
+static const TestFixture fixture_bad_origin_proto_no_header = {
+  .web_socket_flavor = WEB_SOCKET_FLAVOR_HIXIE76,
+  .origin = "https://127.0.0.1",
+  .config = SRCDIR "/src/ws/mock-config/cockpit/cockpit-alt.conf"
+};
+
+static const TestFixture fixture_bad_origin_proto_no_config = {
+  .web_socket_flavor = WEB_SOCKET_FLAVOR_HIXIE76,
+  .origin = "https://127.0.0.1",
+  .forward = "https",
+  .config = NULL
 };
 
 static void
@@ -1913,6 +1938,7 @@ main (int argc,
   gint i;
 
   cockpit_test_init (&argc, &argv);
+  cockpit_ws_ssh_program = BUILDDIR "/cockpit-ssh";
 
   /*
    * HACK: Work around races in glib SIGCHLD handling.
@@ -1990,6 +2016,16 @@ main (int argc,
               test_handshake_and_auth, teardown_for_socket);
   g_test_add ("/web-service/allowed-origin/hixie76", TestCase,
               &fixture_allowed_origin_hixie76, setup_for_socket,
+              test_handshake_and_auth, teardown_for_socket);
+
+  g_test_add ("/web-service/bad-origin/protocol-no-config", TestCase,
+              &fixture_bad_origin_proto_no_config, setup_for_socket,
+              test_bad_origin, teardown_for_socket);
+  g_test_add ("/web-service/bad-origin/protocol-no-header", TestCase,
+              &fixture_bad_origin_proto_no_header, setup_for_socket,
+              test_bad_origin, teardown_for_socket);
+  g_test_add ("/web-service/allowed-origin/protocol-header", TestCase,
+              &fixture_allowed_origin_proto_header, setup_for_socket,
               test_handshake_and_auth, teardown_for_socket);
 
   g_test_add ("/web-service/auth-results", TestCase,

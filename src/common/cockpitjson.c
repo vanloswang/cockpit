@@ -587,6 +587,14 @@ cockpit_json_parse_bytes (GBytes *data,
                           GError **error)
 {
   gsize length = g_bytes_get_size (data);
+
+  if (length == 0)
+    {
+      g_set_error (error, JSON_PARSER_ERROR, JSON_PARSER_ERROR_PARSE,
+                   "JSON data was empty");
+      return NULL;
+    }
+
   return cockpit_json_parse_object (g_bytes_get_data (data, NULL), length, error);
 }
 
@@ -926,4 +934,48 @@ cockpit_json_write (JsonNode *node,
     }
 
   return retval;
+}
+
+JsonObject *
+cockpit_json_from_hash_table (GHashTable *hash_table,
+                              const gchar **fields)
+{
+  JsonObject *block = NULL;
+  gint i;
+  const gchar *value;
+
+  if (hash_table)
+   {
+     block = json_object_new ();
+     for (i = 0; fields[i] != NULL; i++)
+       {
+         value = g_hash_table_lookup (hash_table, fields[i]);
+         if (value)
+           json_object_set_string_member (block, fields[i], value);
+         else
+           json_object_set_null_member (block, fields[i]);
+       }
+   }
+
+  return block;
+}
+
+GHashTable *
+cockpit_json_to_hash_table (JsonObject *object,
+                            const gchar **fields)
+{
+  gint i;
+  GHashTable *hash_table = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
+
+  for (i = 0; fields[i] != NULL; i++)
+    {
+      const gchar *value;
+      if (!cockpit_json_get_string (object, fields[i], NULL, &value))
+        continue;
+
+      if (value)
+        g_hash_table_insert (hash_table, g_strdup (fields[i]), g_strdup (value));
+   }
+
+  return hash_table;
 }

@@ -24,6 +24,7 @@
 #include "cockpitchannel.h"
 #include "cockpitdbuscache.h"
 #include "cockpitdbusinternal.h"
+#include "cockpitdbusmeta.h"
 #include "cockpitdbusrules.h"
 
 #include "common/cockpitjson.h"
@@ -46,28 +47,39 @@ gboolean cockpit_dbus_json_allow_external = TRUE;
 typedef struct {
   CockpitChannel parent;
   GDBusConnection *connection;
-  gboolean subscribed;
-  guint subscribe_id;
+  GBusType bus_type;
 
   /* Talking to */
   const gchar *logname;
-  const gchar *name;
-  guint name_watch;
-  gboolean name_watched;
-  gboolean name_appeared;
+  const gchar *default_name;
+  guint default_watch;
+  gboolean default_watched;
+  gboolean default_appeared;
 
   /* Call related */
   GCancellable *cancellable;
   GList *active_calls;
+  GHashTable *interface_info;
+
+  /* Per name information */
+  GHashTable *peers;
+} CockpitDBusJson;
+
+typedef struct {
+  gchar *name;
+  CockpitDBusJson *dbus_json;
+
+  guint subscribe_id;
+  gboolean subscribed;
 
   /* Signal related */
   CockpitDBusRules *rules;
 
-  /* Watch related */
+  /* Watch and introspection */
   CockpitDBusCache *cache;
   gulong meta_sig;
   gulong update_sig;
-} CockpitDBusJson;
+} CockpitDBusPeer;
 
 typedef struct {
   CockpitChannelClass parent_class;
@@ -850,80 +862,6 @@ build_json_signal (const gchar *path,
   return object;
 }
 
-static JsonArray *
-build_json_meta_args (GDBusArgInfo **args)
-{
-  JsonArray *array = json_array_new ();
-  while (*args)
-    {
-      json_array_add_string_element (array, (*args)->signature);
-      args++;
-    }
-  return array;
-}
-
-static JsonObject *
-build_json_meta (GDBusInterfaceInfo *iface)
-{
-  JsonObject *object;
-  JsonObject *meta;
-  JsonObject *interface;
-  JsonObject *methods;
-  JsonObject *method;
-  JsonObject *properties;
-  JsonObject *property;
-  GString *flags;
-  guint i;
-
-  interface = json_object_new ();
-
-  if (iface->methods)
-    {
-      methods = json_object_new ();
-      for (i = 0; iface->methods[i] != NULL; i++)
-        {
-          method = json_object_new ();
-          if (iface->methods[i]->in_args)
-            json_object_set_array_member (method, "in", build_json_meta_args (iface->methods[i]->in_args));
-          if (iface->methods[i]->out_args)
-            json_object_set_array_member (method, "out", build_json_meta_args (iface->methods[i]->out_args));
-          json_object_set_object_member (methods, iface->methods[i]->name, method);
-        }
-      json_object_set_object_member (interface, "methods", methods);
-    }
-
-  if (iface->properties)
-    {
-      flags = g_string_new ("");
-      properties = json_object_new ();
-      for (i = 0; iface->properties[i] != NULL; i++)
-        {
-          g_string_set_size (flags, 0);
-          property = json_object_new ();
-          if (iface->properties[i]->flags & G_DBUS_PROPERTY_INFO_FLAGS_READABLE)
-            g_string_append_c (flags, 'r');
-          if (iface->properties[i]->flags & G_DBUS_PROPERTY_INFO_FLAGS_WRITABLE)
-            g_string_append_c (flags, 'w');
-          json_object_set_string_member (property, "flags", flags->str);
-          if (iface->properties[i]->signature)
-            json_object_set_string_member (property, "type", iface->properties[i]->signature);
-          json_object_set_object_member (properties, iface->properties[i]->name, property);
-        }
-      g_string_free (flags, TRUE);
-      json_object_set_object_member (interface, "properties", properties);
-    }
-
-
-  meta = json_object_new ();
-  json_object_set_object_member (meta, iface->name, interface);
-
-  object = json_object_new ();
-  json_object_set_object_member (object, "meta", meta);
-
-  return object;
-}
-
-
 /* ---------------------------------------------------------------------------------------------------- */
 
 typedef struct {
@@ -939,6 +877,7 @@ typedef struct {
 
   /* Owned by request */
   const gchar *cookie;
+  const gchar *name;
   const gchar *interface;
   const gchar *method;
   const gchar *path;
@@ -946,6 +885,10 @@ typedef struct {
   const gchar *flags;
   JsonNode *args;
 } CallData;
+
+static CockpitDBusPeer *
+ensure_peer (CockpitDBusJson *self,
+             const gchar *name);
 
 static void
 send_dbus_error (CockpitDBusJson *self,
@@ -990,12 +933,13 @@ on_wait_complete (CockpitDBusCache *cache,
 
 static void
 send_with_barrier (CockpitDBusJson *self,
+                   CockpitDBusPeer *peer,
                    JsonObject *message)
 {
   WaitData *wd = g_slice_new (WaitData);
   wd->dbus_json = g_object_ref (self);
   wd->message = json_object_ref (message);
-  cockpit_dbus_cache_barrier (self->cache, on_wait_complete, wd);
+  cockpit_dbus_cache_barrier (peer->cache, on_wait_complete, wd);
 }
 
 static void
@@ -1003,6 +947,7 @@ send_dbus_reply (CockpitDBusJson *self,
                  CallData *call,
                  GDBusMessage *message)
 {
+  CockpitDBusPeer *peer;
   GVariant *scrape = NULL;
   JsonObject *object;
   GString *flags;
@@ -1049,19 +994,20 @@ send_dbus_reply (CockpitDBusJson *self,
       g_string_free (flags, TRUE);
     }
 
-  cockpit_dbus_cache_poke (self->cache, call->path, call->interface);
+  peer = ensure_peer (self, call->name);
+  cockpit_dbus_cache_poke (peer->cache, call->path, call->interface);
   if (scrape)
-    cockpit_dbus_cache_scrape (self->cache, scrape);
-  send_with_barrier (self, object);
+    cockpit_dbus_cache_scrape (peer->cache, scrape);
+  send_with_barrier (self, peer, object);
 
   json_object_unref (object);
 }
 
 static GVariantType *
-calculate_param_type (GDBusInterfaceInfo *info,
-                      const gchar *iface,
-                      const gchar *method,
-                      GError **error)
+calculate_method_param_type (GDBusInterfaceInfo *info,
+                             const gchar *iface,
+                             const gchar *method,
+                             GError **error)
 {
   const GVariantType *arg_types[256];
   GDBusMethodInfo *method_info = NULL;
@@ -1152,14 +1098,15 @@ handle_dbus_call_on_interface (CockpitDBusJson *self,
 
   g_debug ("%s: invoking %s %s at %s", self->logname, call->interface, call->method, call->path);
 
-  message = g_dbus_message_new_method_call (call->dbus_json->name,
+  message = g_dbus_message_new_method_call (call->name,
                                             call->path,
                                             call->interface,
                                             call->method);
 
   g_dbus_message_set_body (message, parameters);
+  parameters = NULL;
 
-  g_dbus_connection_send_message_with_reply (call->dbus_json->connection,
+  g_dbus_connection_send_message_with_reply (self->connection,
                                              message,
                                              G_DBUS_SEND_MESSAGE_FLAGS_NONE,
                                              G_MAXINT, /* timeout */
@@ -1199,7 +1146,8 @@ on_introspect_ready (CockpitDBusCache *cache,
       return;
     }
 
-  call->param_type = calculate_param_type (iface, call->interface, call->method, &error);
+  call->param_type = calculate_method_param_type (iface, call->interface,
+                                                  call->method, &error);
 
   if (error)
     {
@@ -1231,117 +1179,318 @@ array_string_element (JsonArray *array,
 #define G_DBUS_ERROR_UNKNOWN_OBJECT G_DBUS_ERROR_UNKNOWN_METHOD
 #endif
 
+static gboolean
+parse_json_method (CockpitDBusJson *self,
+                   JsonNode *node,
+                   const gchar *description,
+                   const gchar **path,
+                   const gchar **interface,
+                   const gchar **method,
+                   JsonNode **args)
+{
+  JsonArray *array;
+
+  g_assert (description != NULL);
+  g_assert (path != NULL);
+  g_assert (interface != NULL);
+  g_assert (method != NULL);
+  g_assert (args != NULL);
+
+  if (!JSON_NODE_HOLDS_ARRAY (node))
+    {
+      cockpit_channel_fail (COCKPIT_CHANNEL (self), "protocol-error",
+                            "incorrect '%s' field in dbus command", description);
+      return FALSE;
+    }
+
+  array = json_node_get_array (node);
+  *path = array_string_element (array, 0);
+  *interface = array_string_element (array, 1);
+  *method = array_string_element (array, 2);
+
+  *args = json_array_get_element (array, 3);
+  if (!*args || !JSON_NODE_HOLDS_ARRAY (*args))
+    {
+      cockpit_channel_fail (COCKPIT_CHANNEL (self), "protocol-error",
+                            "arguments field is invalid in dbus \"%s\"", description);
+    }
+  else if (!*path || !g_variant_is_object_path (*path))
+    {
+      cockpit_channel_fail (COCKPIT_CHANNEL (self), "protocol-error",
+                            "object path is invalid in dbus \"%s\": %s", description, *path);
+    }
+  else if (!*interface || !g_dbus_is_interface_name (*interface))
+    {
+      cockpit_channel_fail (COCKPIT_CHANNEL (self), "protocol-error",
+                            "interface name is invalid in dbus \"%s\": %s", description, *interface);
+    }
+  else if (!*method || !g_dbus_is_member_name (*method))
+    {
+      cockpit_channel_fail (COCKPIT_CHANNEL (self), "protocol-error",
+                            "member name is invalid in dbus \"%s\": %s", description, *method);
+    }
+  else
+    {
+      return TRUE;
+    }
+
+  return FALSE;
+}
+
 static void
 handle_dbus_call (CockpitDBusJson *self,
                   JsonObject *object)
 {
-  GError *error = NULL;
+  CockpitDBusPeer *peer = NULL;
   CallData *call;
-  JsonArray *array;
   JsonNode *node;
-  gchar *type;
+  gchar *string;
 
   node = json_object_get_member (object, "call");
   g_return_if_fail (node != NULL);
-
-  if (!JSON_NODE_HOLDS_ARRAY (node))
-    {
-      g_warning ("incorrect call field in dbus command");
-      cockpit_channel_close (COCKPIT_CHANNEL (self), "protocol-error");
-      return;
-    }
-
   call = g_slice_new0 (CallData);
-  array = json_node_get_array (node);
 
-  call->path = array_string_element (array, 0);
-  call->interface = array_string_element (array, 1);
-  call->method = array_string_element (array, 2);
-
-  call->args = json_array_get_element (array, 3);
-  if (!call->args || !JSON_NODE_HOLDS_ARRAY (call->args))
+  if (!parse_json_method (self, node, "call", &call->path, &call->interface, &call->method, &call->args))
     {
-      g_warning ("incorrect arguments field in dbus call");
-      cockpit_channel_close (COCKPIT_CHANNEL (self), "protocol-error");
-      call_data_free (call);
-      return;
+      /* fall through to call invalid */
     }
-
-  if (!cockpit_json_get_string (object, "id", NULL, &call->cookie))
+  else if (!cockpit_json_get_string (object, "name", self->default_name, &call->name))
     {
-      g_set_error (&error, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
-                   "The 'id' field is invalid in call");
+      cockpit_channel_fail (COCKPIT_CHANNEL (self), "protocol-error",
+                            "the \"name\" field is invalid in dbus call");
+    }
+  else if (self->bus_type != G_BUS_TYPE_NONE && call->name == NULL)
+    {
+      cockpit_channel_fail (COCKPIT_CHANNEL (self), "protocol-error",
+                            "the \"name\" field is missing in dbus call");
+    }
+  else if (call->name != NULL && !g_dbus_is_name (call->name))
+    {
+      cockpit_channel_fail (COCKPIT_CHANNEL (self), "protocol-error",
+                            "the \"name\" field in dbus call is not a valid bus name: %s", call->name);
+    }
+  else if (!cockpit_json_get_string (object, "id", NULL, &call->cookie))
+    {
+      cockpit_channel_fail (COCKPIT_CHANNEL (self), "protocol-error",
+                            "the \"id\" field is invalid in call");
     }
   else if (!cockpit_json_get_string (object, "type", NULL, &call->type))
     {
-      g_set_error (&error, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
-                   "The 'type' field is invalid in call");
+      cockpit_channel_fail (COCKPIT_CHANNEL (self), "protocol-error",
+                            "the \"type\" field is invalid in call");
+    }
+  else if (call->type && !g_variant_is_signature (call->type))
+    {
+      cockpit_channel_fail (COCKPIT_CHANNEL (self), "protocol-error",
+                            "the \"type\" signature is not valid in dbus call: %s", call->type);
     }
   else if (!cockpit_json_get_string (object, "flags", NULL, &call->flags))
     {
-      g_set_error (&error, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
-                   "The 'flags' field is invalid in call");
+      cockpit_channel_fail (COCKPIT_CHANNEL (self), "protocol-error",
+                            "the \"flags\" field is invalid in dbus call");
     }
-  else if (!call->path || !g_variant_is_object_path (call->path))
+  else
     {
-      g_set_error (&error, G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_OBJECT,
-                   "Object path is not valid: %s", call->path);
-    }
-  else if (!call->interface || !g_dbus_is_interface_name (call->interface))
-    {
-      g_set_error (&error, G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_INTERFACE,
-                   "Interface name is not valid: %s", call->interface);
-    }
-  else if (!call->method || !g_dbus_is_member_name (call->method))
-    {
-      g_set_error (&error, G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_METHOD,
-                   "Method name is not valid: %s", call->method);
-    }
-  else if (call->type)
-    {
-      if (!g_variant_is_signature (call->type))
+      if (call->type)
         {
-          g_set_error (&error, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
-                       "Type signature is not valid: %s", call->type);
+          string = g_strdup_printf ("(%s)", call->type);
+          call->param_type = g_variant_type_new (string);
+          g_free (string);
+        }
+
+      /* No arguments or zero arguments, can make call without introspecting */
+      if (!call->param_type)
+        {
+          if (json_array_get_length (json_node_get_array (call->args)) == 0)
+            call->param_type = g_variant_type_new ("()");
+        }
+
+      call->dbus_json = self;
+      call->request = json_object_ref (object);
+      self->active_calls = g_list_prepend (self->active_calls, call);
+      call->link = g_list_find (self->active_calls, call);
+
+      if (call->param_type)
+        {
+          /* Frees call data when done */
+          handle_dbus_call_on_interface (self, call);
         }
       else
         {
-          type = g_strdup_printf ("(%s)", call->type);
-          call->param_type = g_variant_type_new (type);
-          g_free (type);
+          peer = ensure_peer (self, call->name);
+          cockpit_dbus_cache_introspect (peer->cache, call->path,
+                                         call->interface, on_introspect_ready, call);
         }
+
+      /* Start processing call */
+      return;
+    }
+
+  /* call was invalid */
+  call_data_free (call);
+}
+
+static GVariantType *
+calculate_signal_param_type (CockpitDBusJson *self,
+                             const gchar *iface,
+                             const gchar *signal)
+{
+  GDBusInterfaceInfo *info;
+  const GVariantType *arg_types[256];
+  GDBusSignalInfo *signal_info = NULL;
+  guint n;
+
+  info = g_hash_table_lookup (self->interface_info, iface);
+  if (info)
+    signal_info = g_dbus_interface_info_lookup_signal (info, signal);
+  if (signal_info == NULL)
+    {
+      cockpit_channel_fail (COCKPIT_CHANNEL (self), "protocol-error",
+                            "signal argument types for signal %s %s unknown", iface, signal);
+      return NULL;
+    }
+  else if (signal_info->args)
+    {
+      for (n = 0; signal_info->args[n] != NULL; n++)
+        {
+          /* DBus places a hard limit of 255 on signature length.
+           * therefore number of args must be less than 256.
+           */
+          if (n >= G_N_ELEMENTS (arg_types))
+            return NULL;
+
+          arg_types[n] = G_VARIANT_TYPE (signal_info->args[n]->signature);
+
+          if G_UNLIKELY (arg_types[n] == NULL)
+            return NULL;
+        }
+    }
+  else
+    {
+      n = 0;
+    }
+  return g_variant_type_new_tuple (arg_types, n);
+}
+
+static void
+handle_dbus_signal_on_interface (CockpitDBusJson *self,
+                                 GVariantType *param_type,
+                                 const gchar *destination,
+                                 const gchar *path,
+                                 const gchar *interface,
+                                 const gchar *signal,
+                                 JsonNode *args)
+{
+  CockpitChannel *channel;
+  GVariant *parameters = NULL;
+  GDBusMessage *message = NULL;
+  GError *error = NULL;
+
+  parameters = parse_json (args, param_type, &error);
+  if (parameters)
+    {
+      g_debug ("%s: signal %s %s at %s", self->logname, interface, signal, path);
+
+      message = g_dbus_message_new_signal (path, interface, signal);
+      g_dbus_message_set_body (message, parameters);
+      parameters = NULL;
+
+      if (destination)
+        g_dbus_message_set_destination (message, destination);
+
+      g_dbus_connection_send_message (self->connection, message,
+                                      G_DBUS_SEND_MESSAGE_FLAGS_NONE,
+                                      NULL, &error);
     }
 
   if (error)
     {
-      send_dbus_error (self, call, error);
+      channel = COCKPIT_CHANNEL (self);
+      if (error->code == G_IO_ERROR_INVALID_ARGUMENT ||
+          error->code == G_DBUS_ERROR_INVALID_ARGS)
+        {
+          cockpit_channel_fail (channel, "protocol-error", "%s", error->message);
+        }
+      else
+        {
+          cockpit_channel_fail (channel, "internal-error", "%s", error->message);
+        }
       g_error_free (error);
-      call_data_free (call);
-      return;
     }
+  if (parameters)
+    g_variant_unref (parameters);
+  if (message)
+    g_object_unref (message);
+}
 
-  /* No arguments or zero arguments, can make call without introspecting */
-  if (!call->param_type)
+static void
+handle_dbus_signal (CockpitDBusJson *self,
+                    JsonObject *object)
+{
+  GVariantType *param_type = NULL;
+  const gchar *interface;
+  const gchar *destination;
+  const gchar *path;
+  const gchar *type;
+  const gchar *flags;
+  const gchar *signal;
+  JsonNode *node;
+  JsonNode *args;
+  gchar *string;
+
+  node = json_object_get_member (object, "signal");
+  g_return_if_fail (node != NULL);
+
+  if (!parse_json_method (self, node, "signal", &path, &interface, &signal, &args))
     {
-      if (json_array_get_length (json_node_get_array (call->args)) == 0)
-        call->param_type = g_variant_type_new ("()");
+      /* fall through to call invalid */
     }
-
-  call->dbus_json = self;
-  call->request = json_object_ref (object);
-  self->active_calls = g_list_prepend (self->active_calls, call);
-  call->link = g_list_find (self->active_calls, call);
-
-  if (call->param_type)
+  else if (!cockpit_json_get_string (object, "name", NULL, &destination))
     {
-      /* Frees call data when done */
-      handle_dbus_call_on_interface (self, call);
+      cockpit_channel_fail (COCKPIT_CHANNEL (self), "protocol-error",
+                            "the 'name' field is invalid in signal");
+    }
+  else if (destination != NULL && !g_dbus_is_name (destination))
+    {
+      cockpit_channel_fail (COCKPIT_CHANNEL (self), "protocol-error",
+                            "the 'name' field is not a valid bus name: %s", destination);
+    }
+  else if (!cockpit_json_get_string (object, "type", NULL, &type))
+    {
+      cockpit_channel_fail (COCKPIT_CHANNEL (self), "protocol-error",
+                            "the 'type' field is invalid in dbus signal");
+    }
+  else if (type && !g_variant_is_signature (type))
+    {
+      cockpit_channel_fail (COCKPIT_CHANNEL (self), "protocol-error",
+                            "type signature is not valid in dbus signal: %s", type);
+    }
+  else if (!cockpit_json_get_string (object, "flags", NULL, &flags))
+    {
+      cockpit_channel_fail (COCKPIT_CHANNEL (self), "protocol-error",
+                            "the 'flags' field is invalid in call");
     }
   else
     {
-      cockpit_dbus_cache_introspect (self->cache, call->path, call->interface,
-                                     on_introspect_ready, call);
+      if (type)
+        {
+          string = g_strdup_printf ("(%s)", type);
+          param_type = g_variant_type_new (string);
+          g_free (string);
+        }
+      else
+        {
+          param_type = calculate_signal_param_type (self, interface, signal);
+        }
+
+      if (param_type)
+        {
+          handle_dbus_signal_on_interface (self, param_type, destination,
+                                           path, interface, signal, args);
+        }
     }
+
+  g_variant_type_free (param_type);
 }
 
 static void
@@ -1359,8 +1508,8 @@ on_add_match_ready (GObject *source,
       if (!g_cancellable_is_cancelled (self->cancellable) &&
           !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CLOSED))
         {
-          g_warning ("couldn't add match to bus: %s", error->message);
-          cockpit_channel_close (COCKPIT_CHANNEL (self), "internal-error");
+          cockpit_channel_fail (COCKPIT_CHANNEL (self), "internal-error",
+                                "couldn't add match to bus: %s", error->message);
         }
       g_error_free (error);
     }
@@ -1372,24 +1521,28 @@ on_add_match_ready (GObject *source,
 static gboolean
 parse_json_rule (CockpitDBusJson *self,
                  JsonNode *node,
+                 const gchar **name,
                  const gchar **path,
                  const gchar **path_namespace,
                  const gchar **interface,
                  const gchar **signal,
                  const gchar **arg0)
 {
+  CockpitChannel *channel = COCKPIT_CHANNEL (self);
   JsonObject *object;
   gboolean valid;
   GList *names, *l;
 
   if (!JSON_NODE_HOLDS_OBJECT (node))
     {
-      g_warning ("incorrect match field in dbus command");
+      cockpit_channel_fail (channel, "protocol-error", "incorrect match field in dbus command");
       return FALSE;
     }
 
   object = json_node_get_object (node);
 
+  if (name)
+    *name = NULL;
   if (path)
     *path = NULL;
   if (path_namespace)
@@ -1405,6 +1558,8 @@ parse_json_rule (CockpitDBusJson *self,
   for (l = names; l != NULL; l = g_list_next (l))
     {
       valid = FALSE;
+      if (name && g_str_equal (l->data, "name"))
+        valid = cockpit_json_get_string (object, "name", NULL, name);
       if (interface && g_str_equal (l->data, "interface"))
         valid = cockpit_json_get_string (object, "interface", NULL, interface);
       else if (signal && g_str_equal (l->data, "member"))
@@ -1418,7 +1573,8 @@ parse_json_rule (CockpitDBusJson *self,
 
       if (!valid)
         {
-          g_warning ("invalid or unsupported match field: %s", (gchar *)l->data);
+          cockpit_channel_fail (channel, "protocol-error",
+                                "invalid or unsupported match field: %s", (gchar *)l->data);
           g_list_free (names);
           return FALSE;
         }
@@ -1426,26 +1582,41 @@ parse_json_rule (CockpitDBusJson *self,
   g_list_free (names);
 
   valid = FALSE;
-  if (path && *path && !g_variant_is_object_path (*path))
-    g_warning ("match path is not valid: %s", *path);
+  if (name && *name && !g_dbus_is_name (*name))
+    cockpit_channel_fail (channel, "protocol-error", "match \"name\" is not valid: %s", *name);
+  else if (path && *path && !g_variant_is_object_path (*path))
+    cockpit_channel_fail (channel, "protocol-error", "match path is not valid: %s", *path);
   else if (path_namespace && *path_namespace && !g_variant_is_object_path (*path_namespace))
-    g_warning ("match path_namespace is not valid: %s", *path_namespace);
+    cockpit_channel_fail (channel, "protocol-error", "match path_namespace is not valid: %s", *path_namespace);
   else if (interface && *interface && !g_dbus_is_interface_name (*interface))
-    g_warning ("match interface is not valid: %s", *interface);
+    cockpit_channel_fail (channel, "protocol-error", "match interface is not valid: %s", *interface);
   else if (signal && *signal && !g_dbus_is_member_name (*signal))
-    g_warning ("match name is not valid: %s", *signal);
+    cockpit_channel_fail (channel, "protocol-error", "match \"member\" is not valid: %s", *signal);
   else if (arg0 && *arg0 && strchr (*arg0, '\'') != NULL)
-    g_warning ("match arg0 is not valid: %s", *arg0);
+    cockpit_channel_fail (channel, "protocol-error", "match arg0 is not valid: %s", *arg0);
   else if (path && path_namespace && *path && *path_namespace)
-    g_warning ("match cannot specify both path and path_namespace");
+    cockpit_channel_fail (channel, "protocol-error", "match cannot specify both path and path_namespace");
   else
     valid = TRUE;
+
+  if (name)
+    {
+      if (!*name)
+        *name = self->default_name;
+      if (!*name && self->bus_type != G_BUS_TYPE_NONE)
+        {
+          cockpit_channel_fail (channel, "protocol-error",
+                                "%s: no \"name\" specified in match", self->logname);
+          valid = FALSE;
+        }
+    }
 
   return valid;
 }
 
 static gchar *
 build_dbus_match (CockpitDBusJson *self,
+                  const gchar *name,
                   const gchar *path,
                   const gchar *path_namespace,
                   const gchar *interface,
@@ -1453,8 +1624,10 @@ build_dbus_match (CockpitDBusJson *self,
                   const gchar *arg0)
 {
   GString *string = g_string_new ("type='signal'");
-  if (self->name)
-    g_string_append_printf (string, ",sender='%s'", self->name);
+  if (!name)
+    name = self->default_name;
+  if (name)
+    g_string_append_printf (string, ",sender='%s'", name);
   if (path)
     g_string_append_printf (string, ",path='%s'", path);
   if (path_namespace && !g_str_equal (path_namespace, "/"))
@@ -1472,7 +1645,9 @@ static void
 handle_dbus_add_match (CockpitDBusJson *self,
                        JsonObject *object)
 {
+  CockpitDBusPeer *peer = NULL;
   JsonNode *node;
+  const gchar *name;
   const gchar *path;
   const gchar *path_namespace;
   const gchar *interface;
@@ -1483,20 +1658,18 @@ handle_dbus_add_match (CockpitDBusJson *self,
   node = json_object_get_member (object, "add-match");
   g_return_if_fail (node != NULL);
 
-  if (!parse_json_rule (self, node, &path, &path_namespace, &interface, &signal, &arg0))
-    {
-      cockpit_channel_close (COCKPIT_CHANNEL (self), "protocol-error");
-      return;
-    }
+  if (!parse_json_rule (self, node, &name, &path, &path_namespace, &interface, &signal, &arg0))
+    return;
 
-  if (cockpit_dbus_rules_add (self->rules,
+  peer = ensure_peer (self, name);
+  if (cockpit_dbus_rules_add (peer->rules,
                               path ? path : path_namespace,
                               path_namespace ? TRUE : FALSE,
                               interface, signal, arg0))
     {
-      if (self->name)
+      if (peer->name)
         {
-          match = build_dbus_match (self, path, path_namespace, interface, signal, arg0);
+          match = build_dbus_match (self, name, path, path_namespace, interface, signal, arg0);
           g_dbus_connection_call (self->connection,
                                   "org.freedesktop.DBus",
                                   "/org/freedesktop/DBus",
@@ -1527,8 +1700,8 @@ on_remove_match_ready (GObject *source,
       if (!g_cancellable_is_cancelled (self->cancellable) &&
           !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CLOSED))
         {
-          g_warning ("couldn't remove match from bus: %s", error->message);
-          cockpit_channel_close (COCKPIT_CHANNEL (self), "internal-error");
+          cockpit_channel_fail (COCKPIT_CHANNEL (self), "internal-error",
+                                "couldn't remove match from bus: %s", error->message);
         }
       g_error_free (error);
     }
@@ -1541,7 +1714,9 @@ static void
 handle_dbus_remove_match (CockpitDBusJson *self,
                           JsonObject *object)
 {
+  CockpitDBusPeer *peer;
   JsonNode *node;
+  const gchar *name;
   const gchar *path;
   const gchar *path_namespace;
   const gchar *interface;
@@ -1552,20 +1727,18 @@ handle_dbus_remove_match (CockpitDBusJson *self,
   node = json_object_get_member (object, "remove-match");
   g_return_if_fail (node != NULL);
 
-  if (!parse_json_rule (self, node, &path, &path_namespace, &interface, &signal, &arg0))
-    {
-      cockpit_channel_close (COCKPIT_CHANNEL (self), "protocol-error");
-      return;
-    }
+  if (!parse_json_rule (self, node, &name, &path, &path_namespace, &interface, &signal, &arg0))
+    return;
 
-  if (cockpit_dbus_rules_remove (self->rules,
+  peer = ensure_peer (self, name);
+  if (cockpit_dbus_rules_remove (peer->rules,
                                  path ? path : path_namespace,
                                  path_namespace ? TRUE : FALSE,
                                  interface, signal, arg0))
     {
-      if (self->name)
+      if (peer->name)
         {
-          match = build_dbus_match (self, path, path_namespace, interface, signal, arg0);
+          match = build_dbus_match (self, name, path, path_namespace, interface, signal, arg0);
           g_dbus_connection_call (self->connection,
                                   "org.freedesktop.DBus",
                                   "/org/freedesktop/DBus",
@@ -1582,14 +1755,82 @@ handle_dbus_remove_match (CockpitDBusJson *self,
 }
 
 static void
+maybe_include_name (CockpitDBusJson *self,
+                    JsonObject *object,
+                    const gchar *name)
+{
+  if (name && g_strcmp0 (name, self->default_name) != 0)
+    json_object_set_string_member (object, "name", name);
+}
+
+static void
 on_cache_meta (CockpitDBusCache *cache,
                GDBusInterfaceInfo *iface,
                gpointer user_data)
 {
-  CockpitDBusJson *self = user_data;
-  JsonObject *object = build_json_meta (iface);
-  send_json_object (self, object);
-  json_object_unref (object);
+  CockpitDBusPeer *peer = user_data;
+  JsonObject *interface;
+  JsonObject *meta;
+  JsonObject *message;
+
+  interface = cockpit_dbus_meta_build (iface);
+
+  meta = json_object_new ();
+  json_object_set_object_member (meta, iface->name, interface);
+
+  message = json_object_new ();
+  json_object_set_object_member (message, "meta", meta);
+
+  maybe_include_name (peer->dbus_json, message, peer->name);
+  send_json_object (peer->dbus_json, message);
+  json_object_unref (message);
+}
+
+static void
+handle_dbus_meta (CockpitDBusJson *self,
+                  JsonObject *object)
+{
+  CockpitChannel *channel = COCKPIT_CHANNEL (self);
+  GDBusInterfaceInfo *iface;
+  JsonObject *interface;
+  GError *error = NULL;
+  JsonObject *meta;
+  GList *names, *l;
+  JsonNode *node;
+
+  node = json_object_get_member (object, "meta");
+  g_return_if_fail (node != NULL);
+
+  if (!JSON_NODE_HOLDS_OBJECT (node))
+    {
+      cockpit_channel_fail (channel, "protocol-error", "incorrect \"meta\" field in dbus command");
+      return;
+    }
+
+  meta = json_node_get_object (node);
+  names = json_object_get_members (meta);
+  for (l = names; l != NULL; l = g_list_next (l))
+    {
+      if (!cockpit_json_get_object (meta, l->data, NULL, &interface))
+        {
+          cockpit_channel_fail (channel, "protocol-error", "invalid interface in dbus \"meta\" command");
+          break;
+        }
+
+      iface = cockpit_dbus_meta_parse (l->data, interface, &error);
+      if (iface)
+        {
+          g_hash_table_insert (self->interface_info, iface->name, iface);
+        }
+      else
+        {
+          cockpit_channel_fail (channel, "protocol-error", "%s", error->message);
+          g_error_free (error);
+          break;
+        }
+    }
+
+  g_list_free (names);
 }
 
 static JsonObject *
@@ -1643,10 +1884,11 @@ on_cache_update (CockpitDBusCache *cache,
                  GHashTable *update,
                  gpointer user_data)
 {
-  CockpitDBusJson *self = user_data;
+  CockpitDBusPeer *peer = user_data;
   JsonObject *object = json_object_new ();
+  maybe_include_name (peer->dbus_json, object, peer->name);
   json_object_set_object_member (object, "notify", build_json_update (update));
-  send_json_object (self, object);
+  send_json_object (peer->dbus_json, object);
   json_object_unref (object);
 }
 
@@ -1654,6 +1896,8 @@ static void
 handle_dbus_watch (CockpitDBusJson *self,
                    JsonObject *object)
 {
+  CockpitDBusPeer *peer = NULL;
+  const gchar *name;
   const gchar *path;
   const gchar *path_namespace;
   const gchar *interface;
@@ -1664,11 +1908,8 @@ handle_dbus_watch (CockpitDBusJson *self,
   node = json_object_get_member (object, "watch");
   g_return_if_fail (node != NULL);
 
-  if (!parse_json_rule (self, node, &path, &path_namespace, &interface, NULL, NULL))
-    {
-      cockpit_channel_close (COCKPIT_CHANNEL (self), "protocol-error");
-      return;
-    }
+  if (!parse_json_rule (self, node, &name, &path, &path_namespace, &interface, NULL, NULL))
+    return;
 
   if (path_namespace)
     {
@@ -1676,7 +1917,8 @@ handle_dbus_watch (CockpitDBusJson *self,
       is_namespace = TRUE;
     }
 
-  cockpit_dbus_cache_watch (self->cache, path, is_namespace, interface);
+  peer = ensure_peer (self, name);
+  cockpit_dbus_cache_watch (peer->cache, path, is_namespace, interface);
 
   if (!path)
     path = "/";
@@ -1687,8 +1929,8 @@ handle_dbus_watch (CockpitDBusJson *self,
       object = json_object_new ();
       json_object_set_array_member (object, "reply", json_array_new ());
       json_object_set_string_member (object, "id", cookie);
-      cockpit_dbus_cache_poke (self->cache, path, NULL);
-      send_with_barrier (self, object);
+      cockpit_dbus_cache_poke (peer->cache, path, NULL);
+      send_with_barrier (self, peer, object);
       json_object_unref (object);
     }
 }
@@ -1697,6 +1939,8 @@ static void
 handle_dbus_unwatch (CockpitDBusJson *self,
                      JsonObject *object)
 {
+  CockpitDBusPeer *peer;
+  const gchar *name;
   const gchar *path;
   const gchar *path_namespace;
   const gchar *interface;
@@ -1706,10 +1950,8 @@ handle_dbus_unwatch (CockpitDBusJson *self,
   node = json_object_get_member (object, "unwatch");
   g_return_if_fail (node != NULL);
 
-  if (!parse_json_rule (self, node, &path, &path_namespace, &interface, NULL, NULL))
-    {
-      cockpit_channel_close (COCKPIT_CHANNEL (self), "protocol-error");
-    }
+  if (!parse_json_rule (self, node, &name, &path, &path_namespace, &interface, NULL, NULL))
+    return;
 
   if (path_namespace)
     {
@@ -1717,7 +1959,8 @@ handle_dbus_unwatch (CockpitDBusJson *self,
       is_namespace = TRUE;
     }
 
-  cockpit_dbus_cache_unwatch (self->cache, path, is_namespace, interface);
+  peer = ensure_peer (self, name);
+  cockpit_dbus_cache_unwatch (peer->cache, path, is_namespace, interface);
 }
 
 static void
@@ -1731,14 +1974,15 @@ cockpit_dbus_json_recv (CockpitChannel *channel,
   object = cockpit_json_parse_bytes (message, &error);
   if (!object)
     {
-      g_warning ("failed to parse request: %s", error->message);
+      cockpit_channel_fail (channel, "protocol-error", "failed to parse dbus request: %s", error->message);
       g_clear_error (&error);
-      cockpit_channel_close (channel, "protocol-error");
       return;
     }
 
   if (json_object_has_member (object, "call"))
     handle_dbus_call (self, object);
+  else if (json_object_has_member (object, "signal"))
+    handle_dbus_signal (self, object);
   else if (json_object_has_member (object, "add-match"))
     handle_dbus_add_match (self, object);
   else if (json_object_has_member (object, "remove-match"))
@@ -1747,10 +1991,11 @@ cockpit_dbus_json_recv (CockpitChannel *channel,
     handle_dbus_watch (self, object);
   else if (json_object_has_member (object, "unwatch"))
     handle_dbus_unwatch (self, object);
+  else if (json_object_has_member (object, "meta"))
+    handle_dbus_meta (self, object);
   else
     {
-      g_warning ("got unsupported dbus command");
-      cockpit_channel_close (channel, "protocol-error");
+      cockpit_channel_fail (channel, "protocol-error", "got unsupported dbus command");
     }
 
   json_object_unref (object);
@@ -1773,7 +2018,7 @@ on_signal_message (GDBusConnection *connection,
    * to signals, because then the ordering guarantees are out the window.
    */
 
-  CockpitDBusJson *self = user_data;
+  CockpitDBusPeer *peer = user_data;
   const gchar *arg0 = NULL;
   JsonObject *object;
 
@@ -1789,11 +2034,12 @@ on_signal_message (GDBusConnection *connection,
       g_variant_unref (item);
     }
 
-  if (cockpit_dbus_rules_match (self->rules, path, interface, signal, arg0))
+  if (cockpit_dbus_rules_match (peer->rules, path, interface, signal, arg0))
     {
       object = build_json_signal (path, interface, signal, parameters);
-      cockpit_dbus_cache_poke (self->cache, path, interface);
-      send_with_barrier (self, object);
+      cockpit_dbus_cache_poke (peer->cache, path, interface);
+      maybe_include_name (peer->dbus_json, object, peer->name);
+      send_with_barrier (peer->dbus_json, peer, object);
       json_object_unref (object);
     }
 }
@@ -1811,18 +2057,37 @@ cockpit_dbus_json_init (CockpitDBusJson *self)
 {
   self->cancellable = g_cancellable_new ();
 
-  self->rules = cockpit_dbus_rules_new ();
+  self->peers = g_hash_table_new (g_str_hash, g_str_equal);
+  self->interface_info = cockpit_dbus_interface_info_new ();
 }
 
 static void
 send_owned (CockpitDBusJson *self,
+            const gchar *name,
             const gchar *owner)
 {
   JsonObject *object;
   object = json_object_new ();
+  maybe_include_name (self, object, name);
   json_object_set_string_member (object, "owner", owner);
   send_json_object (self, object);
   json_object_unref (object);
+}
+
+static void
+send_ready (CockpitDBusJson *self)
+{
+  CockpitChannel *channel = COCKPIT_CHANNEL (self);
+  const gchar *unique_name = NULL;
+  JsonObject *message;
+
+  message = json_object_new ();
+  unique_name = g_dbus_connection_get_unique_name (self->connection);
+  if (unique_name)
+    json_object_set_string_member (message, "unique-name", unique_name);
+
+  cockpit_channel_ready (channel, message);
+  json_object_unref (message);
 }
 
 static void
@@ -1832,13 +2097,18 @@ on_name_appeared (GDBusConnection *connection,
                   gpointer user_data)
 {
   CockpitDBusJson *self = COCKPIT_DBUS_JSON (user_data);
-  if (!self->name_appeared)
+
+  g_object_ref (self);
+
+  if (!self->default_appeared)
     {
-      self->name_appeared = TRUE;
-      cockpit_channel_ready (COCKPIT_CHANNEL (self));
+      self->default_appeared = TRUE;
+      send_ready (self);
     }
 
-  send_owned (self, name_owner);
+  send_owned (self, name, name_owner);
+
+  g_object_unref (self);
 }
 
 static void
@@ -1849,33 +2119,55 @@ on_name_vanished (GDBusConnection *connection,
   CockpitDBusJson *self = COCKPIT_DBUS_JSON (user_data);
   CockpitChannel *channel = COCKPIT_CHANNEL (self);
 
-  send_owned (self, NULL);
+  send_owned (self, name, NULL);
 
   if (!G_IS_DBUS_CONNECTION (connection) || g_dbus_connection_is_closed (connection))
     cockpit_channel_close (channel, "disconnected");
-  else if (!self->name_appeared)
+  else if (!self->default_appeared)
     cockpit_channel_close (channel, "not-found");
+}
+
+static CockpitDBusPeer *
+ensure_peer (CockpitDBusJson *self,
+             const gchar *name)
+{
+  CockpitDBusPeer *peer;
+
+  if (!name)
+    name = self->default_name;
+
+  peer = g_hash_table_lookup (self->peers, name ? name : "");
+  if (!peer)
+    {
+      peer = g_new0 (CockpitDBusPeer, 1);
+      peer->name = g_strdup (name);
+      peer->dbus_json = self;
+      peer->cache = cockpit_dbus_cache_new (self->connection, name, self->logname, self->interface_info);
+      peer->meta_sig = g_signal_connect (peer->cache, "meta", G_CALLBACK (on_cache_meta), peer);
+      peer->update_sig = g_signal_connect (peer->cache, "update", G_CALLBACK (on_cache_update), peer);
+      peer->rules = cockpit_dbus_rules_new ();
+
+      peer->subscribe_id = g_dbus_connection_signal_subscribe (self->connection,
+                                                               name,
+                                                               NULL, /* interface */
+                                                               NULL, /* member */
+                                                               NULL, /* object_path */
+                                                               NULL, /* arg0 */
+                                                               G_DBUS_SIGNAL_FLAGS_NO_MATCH_RULE,
+                                                               on_signal_message, peer, NULL);
+
+      g_hash_table_insert (self->peers, peer->name ? peer->name : "", peer);
+    }
+
+  return peer;
 }
 
 static void
 subscribe_and_cache (CockpitDBusJson *self)
 {
   g_dbus_connection_set_exit_on_close (self->connection, FALSE);
-
-  self->cache = cockpit_dbus_cache_new (self->connection, self->name, self->logname);
-  self->meta_sig = g_signal_connect (self->cache, "meta", G_CALLBACK (on_cache_meta), self);
-  self->update_sig = g_signal_connect (self->cache, "update",
-                                       G_CALLBACK (on_cache_update), self);
-
-  self->subscribe_id = g_dbus_connection_signal_subscribe (self->connection,
-                                                           self->name,
-                                                           NULL, /* interface */
-                                                           NULL, /* member */
-                                                           NULL, /* object_path */
-                                                           NULL, /* arg0 */
-                                                           G_DBUS_SIGNAL_FLAGS_NO_MATCH_RULE,
-                                                           on_signal_message, self, NULL);
-  self->subscribed = TRUE;
+  if (self->default_name || self->bus_type == G_BUS_TYPE_NONE)
+    ensure_peer (self, self->default_name);
 }
 
 static void
@@ -1893,8 +2185,7 @@ process_connection (CockpitDBusJson *self,
         }
       else
         {
-          g_warning ("%s", error->message);
-          cockpit_channel_close (channel, "internal-error");
+          cockpit_channel_fail (channel, "internal-error", "%s", error->message);
         }
       g_error_free (error);
     }
@@ -1902,21 +2193,21 @@ process_connection (CockpitDBusJson *self,
     {
       /* Yup, we don't want this */
       g_dbus_connection_set_exit_on_close (self->connection, FALSE);
-      if (self->name)
+      if (self->default_name)
         {
           flags = G_BUS_NAME_WATCHER_FLAGS_AUTO_START;
-          self->name_watch = g_bus_watch_name_on_connection (self->connection,
-                                                             self->name, flags,
-                                                             on_name_appeared,
-                                                             on_name_vanished,
-                                                             self, NULL);
-          self->name_watched = TRUE;
+          self->default_watch = g_bus_watch_name_on_connection (self->connection,
+                                                                self->default_name, flags,
+                                                                on_name_appeared,
+                                                                on_name_vanished,
+                                                                self, NULL);
+          self->default_watched = TRUE;
           subscribe_and_cache (self);
         }
       else
         {
           subscribe_and_cache (self);
-          cockpit_channel_ready (COCKPIT_CHANNEL (self));
+          send_ready (self);
         }
     }
 }
@@ -1952,9 +2243,7 @@ static void
 cockpit_dbus_json_prepare (CockpitChannel *channel)
 {
   CockpitDBusJson *self = COCKPIT_DBUS_JSON (channel);
-  const gchar *problem = "protocol-error";
   JsonObject *options;
-  GBusType bus_type;
   const gchar *bus;
   const gchar *address;
   gboolean internal = FALSE;
@@ -1964,50 +2253,50 @@ cockpit_dbus_json_prepare (CockpitChannel *channel)
   options = cockpit_channel_get_options (channel);
   if (!cockpit_json_get_string (options, "bus", NULL, &bus))
     {
-      g_warning ("invalid \"bus\" option in dbus channel");
-      goto out;
+      cockpit_channel_fail (channel, "protocol-error", "invalid \"bus\" option in dbus channel");
+      return;
     }
   if (!cockpit_json_get_string (options, "address", NULL, &address))
     {
-      g_warning ("invalid \"address\" option in dbus channel");
-      goto out;
+      cockpit_channel_fail (channel, "protocol-error", "invalid \"address\" option in dbus channel");
+      return;
     }
 
   /*
    * The default bus is the "user" bus which doesn't exist in many
    * places yet, so use the session bus for now.
    */
-  bus_type = G_BUS_TYPE_SESSION;
+  self->bus_type = G_BUS_TYPE_SESSION;
   if (bus == NULL || g_str_equal (bus, "system"))
     {
-      bus_type = G_BUS_TYPE_SYSTEM;
+      self->bus_type = G_BUS_TYPE_SYSTEM;
     }
   else if (g_str_equal (bus, "session") ||
            g_str_equal (bus, "user"))
     {
-      bus_type = G_BUS_TYPE_SESSION;
+      self->bus_type = G_BUS_TYPE_SESSION;
     }
   else if (g_str_equal (bus, "none"))
     {
-      bus_type = G_BUS_TYPE_NONE;
+      self->bus_type = G_BUS_TYPE_NONE;
       if (address == NULL || g_str_equal (address, "internal"))
           internal = TRUE;
     }
   else if (g_str_equal (bus, "internal"))
     {
-      bus_type = G_BUS_TYPE_NONE;
+      self->bus_type = G_BUS_TYPE_NONE;
       internal = TRUE;
     }
   else
     {
-      g_warning ("invalid \"bus\" option in dbus channel: %s", bus);
-      goto out;
+      cockpit_channel_fail (channel, "protocol-error", "invalid \"bus\" option in dbus channel: %s", bus);
+      return;
     }
 
   if (!internal && !cockpit_dbus_json_allow_external)
     {
-      problem = "not-supported";
-      goto out;
+      cockpit_channel_close (channel, "not-supported");
+      return;
     }
 
   /* An internal peer to peer connection to cockpit-bridge */
@@ -2015,65 +2304,61 @@ cockpit_dbus_json_prepare (CockpitChannel *channel)
     {
       if (!cockpit_json_get_null (options, "name", NULL))
         {
-          g_warning ("do not specify \"name\" option in dbus channel when \"internal\"");
-          goto out;
+          cockpit_channel_fail (channel, "protocol-error",
+                                "do not specify \"name\" option in dbus channel when \"internal\"");
+          return;
         }
 
       self->connection = cockpit_dbus_internal_client ();
       if (self->connection == NULL)
         {
-          g_warning ("no internal DBus connection");
-          problem = "internal-error";
-          goto out;
+          cockpit_channel_fail (channel, "internal-error", "no internal DBus connection");
+          return;
         }
 
-      self->name = cockpit_dbus_internal_name ();
-      self->logname = self->name;
+      self->default_name = cockpit_dbus_internal_name ();
+      self->logname = "internal";
 
       subscribe_and_cache (self);
-      cockpit_channel_ready (channel);
+      send_ready (self);
     }
   else
     {
-      if (!cockpit_json_get_string (options, "name", NULL, &self->name))
+      if (!cockpit_json_get_string (options, "name", NULL, &self->default_name))
         {
-          self->name = NULL;
+          self->default_name = NULL;
           if (!cockpit_json_get_null (options, "name", NULL))
             {
-              g_warning ("invalid \"name\" option in dbus channel");
-              goto out;
+              cockpit_channel_fail (channel, "protocol-error", "invalid \"name\" option in dbus channel");
+              return;
             }
         }
-
-      if (self->name == NULL && bus_type != G_BUS_TYPE_NONE)
+      else if (self->default_name != NULL && !g_dbus_is_name (self->default_name))
         {
-          g_warning ("missing \"name\" option in dbus channel: %s", self->name);
-          goto out;
-        }
-      else if (self->name != NULL && !g_dbus_is_name (self->name))
-        {
-          g_warning ("bad \"name\" option in dbus channel: %s", self->name);
-          goto out;
+          cockpit_channel_fail (channel, "protocol-error",
+                                "bad \"name\" option in dbus channel: %s", self->default_name);
+          return;
         }
 
-      if (bus_type == G_BUS_TYPE_NONE && !g_dbus_is_address (address))
+      if (self->bus_type == G_BUS_TYPE_NONE && !g_dbus_is_address (address))
         {
-          g_warning ("bad \"address\" option in dbus channel: %s", address);
-          goto out;
+          cockpit_channel_fail (channel, "protocol-error",
+                                "bad \"address\" option in dbus channel: %s", address);
+          return;
         }
 
-      if (self->name != NULL)
-        self->logname = self->name;
+      if (self->default_name != NULL)
+        self->logname = self->default_name;
       else if (address != NULL)
         self->logname = address;
       else
         self->logname = bus;
 
       /* Ready when the bus connection is available */
-      if (bus_type == G_BUS_TYPE_NONE)
+      if (self->bus_type == G_BUS_TYPE_NONE)
         {
           GDBusConnectionFlags flags = G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_CLIENT;
-          if (self->name)
+          if (self->default_name)
             flags = flags | G_DBUS_CONNECTION_FLAGS_MESSAGE_BUS_CONNECTION;
 
           g_dbus_connection_new_for_address (address,
@@ -2085,38 +2370,44 @@ cockpit_dbus_json_prepare (CockpitChannel *channel)
         }
       else
         {
-          g_bus_get (bus_type, self->cancellable, on_bus_ready, g_object_ref (self));
+          g_bus_get (self->bus_type, self->cancellable, on_bus_ready, g_object_ref (self));
         }
     }
-
-  problem = NULL;
-
-out:
-  if (problem)
-    cockpit_channel_close (channel, problem);
 }
 
 static void
 cockpit_dbus_json_dispose (GObject *object)
 {
   CockpitDBusJson *self = COCKPIT_DBUS_JSON (object);
+  CockpitDBusPeer *peer;
+  GHashTableIter iter;
+  gpointer value;
   GList *l;
 
   g_cancellable_cancel (self->cancellable);
 
-  if (self->name_watched)
+  if (self->default_watched)
     {
-      g_bus_unwatch_name (self->name_watch);
-      self->name_watched = FALSE;
+      g_bus_unwatch_name (self->default_watch);
+      self->default_watched = FALSE;
     }
 
-  if (self->cache)
+  g_hash_table_iter_init (&iter, self->peers);
+  while (g_hash_table_iter_next (&iter, NULL, &value))
     {
-      g_signal_handler_disconnect (self->cache, self->meta_sig);
-      g_signal_handler_disconnect (self->cache, self->update_sig);
-      g_object_run_dispose (G_OBJECT (self->cache));
-      g_object_unref (self->cache);
-      self->cache = NULL;
+      g_hash_table_iter_remove (&iter);
+      peer = value;
+
+      g_free (peer->name);
+      g_signal_handler_disconnect (peer->cache, peer->meta_sig);
+      g_signal_handler_disconnect (peer->cache, peer->update_sig);
+      g_object_run_dispose (G_OBJECT (peer->cache));
+      g_object_unref (peer->cache);
+      cockpit_dbus_rules_free (peer->rules);
+
+      if (self->connection)
+        g_dbus_connection_signal_unsubscribe (self->connection, peer->subscribe_id);
+      g_free (peer);
     }
 
   /* Divorce ourselves the outstanding calls */
@@ -2124,12 +2415,6 @@ cockpit_dbus_json_dispose (GObject *object)
     ((CallData *)l->data)->dbus_json = NULL;
   g_list_free (self->active_calls);
   self->active_calls = NULL;
-
-  if (self->connection && self->subscribed)
-    {
-      g_dbus_connection_signal_unsubscribe (self->connection, self->subscribe_id);
-      self->subscribed = FALSE;
-    }
 
   G_OBJECT_CLASS (cockpit_dbus_json_parent_class)->dispose (object);
 }
@@ -2140,8 +2425,9 @@ cockpit_dbus_json_finalize (GObject *object)
   CockpitDBusJson *self = COCKPIT_DBUS_JSON (object);
 
   g_clear_object (&self->connection);
+  g_hash_table_unref (self->interface_info);
+  g_hash_table_unref (self->peers);
   g_object_unref (self->cancellable);
-  cockpit_dbus_rules_free (self->rules);
 
   G_OBJECT_CLASS (cockpit_dbus_json_parent_class)->finalize (object);
 }

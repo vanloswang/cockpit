@@ -1,4 +1,9 @@
 {
+    "version": "@VERSION@",
+    "requires": {
+	"cockpit": "124.x"
+    },
+
     "dashboard": {
         "index": {
             "label": "Cluster",

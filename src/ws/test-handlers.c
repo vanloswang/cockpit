@@ -38,6 +38,9 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 
+/* Mock override this from cockpitconf.c */
+extern const gchar *cockpit_config_file;
+
 #define PASSWORD "this is the password"
 
 typedef struct {
@@ -78,14 +81,13 @@ on_web_response_done_set_flag (CockpitWebResponse *response,
 }
 
 static void
-setup (Test *test,
-       gconstpointer path)
+base_setup (Test *test)
 {
-  const gchar *roots[] = { SRCDIR "/src/ws", NULL };
+  const gchar *static_roots[] = { SRCDIR "/src/ws", SRCDIR "/src/branding/default", NULL };
   GError *error = NULL;
   const gchar *user;
 
-  test->server = cockpit_web_server_new (0, NULL, roots, NULL, &error);
+  test->server = cockpit_web_server_new (NULL, 0, NULL, NULL, &error);
   g_assert_no_error (error);
 
   /* Other test->data fields are fine NULL */
@@ -93,7 +95,7 @@ setup (Test *test,
 
   user = g_get_user_name ();
   test->auth = mock_auth_new (user, PASSWORD);
-  test->roots = cockpit_web_server_resolve_roots (SRCDIR "/src/static", SRCDIR "/src/branding/default", NULL);
+  test->roots = cockpit_web_response_resolve_roots (static_roots);
 
   test->data.auth = test->auth;
   test->data.static_roots = (const gchar **)test->roots;
@@ -105,8 +107,14 @@ setup (Test *test,
 
   test->io = mock_io_stream_new (G_INPUT_STREAM (test->input),
                                  G_OUTPUT_STREAM (test->output));
+}
 
-  test->response = cockpit_web_response_new (test->io, path, NULL, NULL);
+static void
+setup (Test *test,
+       gconstpointer path)
+{
+  base_setup (test);
+  test->response = cockpit_web_response_new (test->io, path, path, NULL, NULL);
   g_signal_connect (test->response, "done",
                     G_CALLBACK (on_web_response_done_set_flag),
                     &test->response_done);
@@ -184,11 +192,11 @@ test_login_with_cookie (Test *test,
   user = g_get_user_name ();
   headers = mock_auth_basic_header (user, PASSWORD);
 
-  cockpit_auth_login_async (test->auth, path, headers, NULL, on_ready_get_result, &result);
+  cockpit_auth_login_async (test->auth, path, NULL, headers, on_ready_get_result, &result);
   g_hash_table_unref (headers);
   while (result == NULL)
     g_main_context_iteration (NULL, TRUE);
-  response = cockpit_auth_login_finish (test->auth, result, 0, test->headers, &error);
+  response = cockpit_auth_login_finish (test->auth, result, NULL, test->headers, &error);
   g_object_unref (result);
 
   g_assert_no_error (error);
@@ -362,6 +370,7 @@ test_ping (Test *test,
 
 typedef struct {
   const gchar *path;
+  const gchar *org_path;
   const gchar *auth;
   const gchar *expect;
   const gchar *config;
@@ -387,18 +396,24 @@ setup_default (Test *test,
   else
     g_setenv ("XDG_DATA_HOME", "/nonexistant", TRUE);
 
-  setup (test, fixture->path);
+  base_setup (test);
+  test->response = cockpit_web_response_new (test->io,
+                                            fixture->org_path ? fixture->org_path : fixture->path,
+                                            fixture->path, NULL, NULL);
+  g_signal_connect (test->response, "done",
+                    G_CALLBACK (on_web_response_done_set_flag),
+                    &test->response_done);
 
   if (fixture->auth)
     {
       user = g_get_user_name ();
       headers = mock_auth_basic_header (user, PASSWORD);
 
-      cockpit_auth_login_async (test->auth, fixture->auth, headers, NULL, on_ready_get_result, &result);
+      cockpit_auth_login_async (test->auth, fixture->auth, NULL, headers, on_ready_get_result, &result);
       g_hash_table_unref (headers);
       while (result == NULL)
         g_main_context_iteration (NULL, TRUE);
-      response = cockpit_auth_login_finish (test->auth, result, 0, test->headers, &error);
+      response = cockpit_auth_login_finish (test->auth, result, NULL, test->headers, &error);
       g_object_unref (result);
 
       g_assert_no_error (error);
@@ -466,7 +481,7 @@ test_resource_checksum (Test *test,
   input = g_memory_input_stream_new ();
   io = mock_io_stream_new (input, output);
   path = "/cockpit/@localhost/checksum";
-  response = cockpit_web_response_new (io, path, NULL, NULL);
+  response = cockpit_web_response_new (io, path, path, NULL, NULL);
   g_signal_connect (response, "done", G_CALLBACK (on_web_response_done_set_flag), &response_done);
   g_assert (cockpit_handler_default (test->server, path, test->headers, response, &test->data));
 
@@ -488,6 +503,45 @@ test_resource_checksum (Test *test,
 }
 
 
+static const DefaultFixture fixture_shell_path_index = {
+  .path = "/",
+  .org_path = "/path/",
+  .auth = "/cockpit",
+  .with_home = TRUE,
+  .expect = "HTTP/1.1 200*"
+      "<base href=\"/path/cockpit/@localhost/another/test.html\">*"
+      "<title>In home dir</title>*"
+};
+
+static const DefaultFixture fixture_shell_path_package = {
+  .path = "/system/host",
+  .org_path = "/path/system/host",
+  .auth = "/cockpit",
+  .expect = "HTTP/1.1 200*"
+      "<base href=\"/path/cockpit/$386257ed81a663cdd7ee12633056dee18d60ddca/another/test.html\">*"
+      "<title>In system dir</title>*"
+};
+
+static const DefaultFixture fixture_shell_path_host = {
+  .path = "/@localhost/system/host",
+  .org_path = "/path/@localhost/system/host",
+  .with_home = TRUE,
+  .auth = "/cockpit",
+  .expect = "HTTP/1.1 200*"
+      "<base href=\"/path/cockpit/@localhost/another/test.html\">*"
+      "<title>In home dir</title>*"
+};
+
+static const DefaultFixture fixture_shell_path_login = {
+  .path = "/system/host",
+  .org_path = "/path/system/host",
+  .auth = NULL,
+  .expect = "HTTP/1.1 200*"
+      "<html>*"
+      "<base href=\"/path/\">*"
+      "show_login()*"
+};
+
 static const DefaultFixture fixture_shell_index = {
   .path = "/",
   .auth = "/cockpit",
@@ -497,11 +551,20 @@ static const DefaultFixture fixture_shell_index = {
       "<title>In home dir</title>*"
 };
 
+static const DefaultFixture fixture_machine_shell_index = {
+  .path = "/=machine",
+  .auth = "/cockpit+=machine",
+  .with_home = TRUE,
+  .expect = "HTTP/1.1 200*"
+      "<base href=\"/cockpit+=machine/@localhost/another/test.html\">*"
+      "<title>In home dir</title>*"
+};
+
 static const DefaultFixture fixture_shell_configured_index = {
   .path = "/",
   .auth = "/cockpit",
   .with_home = TRUE,
-  .config = SRCDIR "/src/ws/mock-config.conf",
+  .config = SRCDIR "/src/ws/mock-config/cockpit/cockpit.conf",
   .expect = "HTTP/1.1 200*"
       "<base href=\"/cockpit/@localhost/second/test.html\">*"
       "<title>In system dir</title>*"
@@ -536,6 +599,12 @@ static const DefaultFixture fixture_shell_package_short = {
   .expect = "HTTP/1.1 404*"
 };
 
+static const DefaultFixture fixture_machine_shell_package_short = {
+  .path = "/=/",
+  .auth = "/cockpit",
+  .expect = "HTTP/1.1 404*"
+};
+
 static const DefaultFixture fixture_shell_package_invalid = {
   .path = "/invalid.path/page",
   .auth = "/cockpit",
@@ -547,6 +616,7 @@ static const DefaultFixture fixture_shell_login = {
   .auth = NULL,
   .expect = "HTTP/1.1 200*"
       "<html>*"
+      "<base href=\"/\">*"
       "show_login()*"
 };
 
@@ -604,16 +674,32 @@ static const DefaultFixture fixture_resource_login = {
 
 static const DefaultFixture fixture_static_simple = {
   .path = "/cockpit/static/branding.css",
-  .auth = NULL,
+  .auth = "/cockpit",
   .expect = "HTTP/1.1 200*"
+    "Cache-Control: max-age=31556926, public*"
     "#badge*"
     "url(\"logo.png\");*"
+};
+
+static const DefaultFixture fixture_host_static = {
+  .path = "/cockpit+=host/static/branding.css",
+  .auth = "/cockpit+=host",
+  .expect = "HTTP/1.1 200*"
+    "Cache-Control: max-age=86400, private*"
+    "#badge*"
+    "url(\"logo.png\");*"
+};
+
+static const DefaultFixture fixture_host_static_no_auth = {
+  .path = "/cockpit+=host/static/branding.css",
+  .expect = "HTTP/1.1 403*"
 };
 
 static const DefaultFixture fixture_static_application = {
   .path = "/cockpit+application/static/branding.css",
   .auth = NULL,
   .expect = "HTTP/1.1 200*"
+    "Cache-Control: max-age=31556926, public*"
     "#badge*"
     "url(\"logo.png\");*"
 };
@@ -697,7 +783,8 @@ test_socket_unauthenticated (void)
   /* Matching the above origin */
   cockpit_ws_default_host_header = "127.0.0.1";
 
-  g_assert (cockpit_handler_socket (NULL, "/cockpit/socket", io_b, NULL, NULL, NULL));
+  g_assert (cockpit_handler_socket (NULL, "/cockpit/socket", "/cockpit/socket",
+                                    io_b, NULL, NULL, NULL));
 
   g_signal_connect (client, "message", G_CALLBACK (on_message_get_bytes), &received);
 
@@ -756,6 +843,8 @@ main (int argc,
 
   g_test_add ("/handlers/shell/index", Test, &fixture_shell_index,
               setup_default, test_default, teardown_default);
+  g_test_add ("/handlers/shell/machine-index", Test, &fixture_machine_shell_index,
+              setup_default, test_default, teardown_default);
   g_test_add ("/handlers/shell/configured_index", Test, &fixture_shell_configured_index,
               setup_default, test_default, teardown_default);
   g_test_add ("/handlers/shell/package", Test, &fixture_shell_package,
@@ -766,9 +855,19 @@ main (int argc,
               setup_default, test_default, teardown_default);
   g_test_add ("/handlers/shell/package-short", Test, &fixture_shell_package_short,
               setup_default, test_default, teardown_default);
+  g_test_add ("/handlers/shell/machine-package-short", Test, &fixture_machine_shell_package_short,
+              setup_default, test_default, teardown_default);
   g_test_add ("/handlers/shell/package-invalid", Test, &fixture_shell_package_invalid,
               setup_default, test_default, teardown_default);
   g_test_add ("/handlers/shell/login", Test, &fixture_shell_login,
+              setup_default, test_default, teardown_default);
+  g_test_add ("/handlers/shell/path-index", Test, &fixture_shell_path_index,
+              setup_default, test_default, teardown_default);
+  g_test_add ("/handlers/shell/path-package", Test, &fixture_shell_path_package,
+              setup_default, test_default, teardown_default);
+  g_test_add ("/handlers/shell/path-host", Test, &fixture_shell_path_host,
+              setup_default, test_default, teardown_default);
+  g_test_add ("/handlers/shell/path-login", Test, &fixture_shell_path_login,
               setup_default, test_default, teardown_default);
 
   g_test_add ("/handlers/resource/checksum", Test, &fixture_resource_checksum,
@@ -792,6 +891,10 @@ main (int argc,
               setup_default, test_default, teardown_default);
 
   g_test_add ("/handlers/static/simple", Test, &fixture_static_simple,
+              setup_default, test_default, teardown_default);
+  g_test_add ("/handlers/static/host-static", Test, &fixture_host_static,
+              setup_default, test_default, teardown_default);
+  g_test_add ("/handlers/static/host-static-no-auth", Test, &fixture_host_static_no_auth,
               setup_default, test_default, teardown_default);
   g_test_add ("/handlers/static/application", Test, &fixture_static_application,
               setup_default, test_default, teardown_default);

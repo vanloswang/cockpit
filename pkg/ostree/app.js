@@ -6,6 +6,7 @@
 
     var angular = require('angular');
     require('angular-route');
+    require('angular-gettext/dist/angular-gettext.js');
     require('angular-bootstrap/ui-bootstrap.js');
     require('angular-bootstrap/ui-bootstrap-tpls.js');
 
@@ -51,6 +52,7 @@
 
     angular.module('ostree', [
             'ngRoute',
+            'gettext',
         ])
         .config([
             '$routeProvider',
@@ -263,6 +265,8 @@
                         scope.$on("$destroy", function() {
                             scope.packages.removeEventListener("changed", on_changed);
                         });
+
+                        scope.signature_obj = client.signature_obj;
 
                         scope.isRunning = false;
                         set_running();

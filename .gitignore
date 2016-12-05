@@ -26,7 +26,8 @@ install-sh
 /config.h
 /config.h.in
 /aclocal.m4
-/dist/
+/dist/*
+!/dist/README.md
 config.guess
 /build/
 /config.log
@@ -47,10 +48,12 @@ depcomp
 /cockpit.service
 /cockpit.conf.5
 /cockpit-*.xz
-/Makefile-webpack.deps
+/Makefile-*.deps
 /containers/*/rpms
 /cockpit.service
 /cockpit-wrapper
+/bower_components/*
+!/bower_components/README
 /node_modules/*
 !/node_modules/README
 /test-server
@@ -147,6 +150,8 @@ po*.js.gz
 /pkg/selinux/setroubleshoot-view.js
 /pkg/tuned/change-profile.js
 /pkg/systemd/terminal.js
+
+.idea
 
 # Test output
 Test*.log

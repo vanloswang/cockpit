@@ -4,16 +4,12 @@
     <title translatable="yes">System</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link href="../base1/cockpit.css" rel="stylesheet">
-    <link href="../shell/shell.css" rel="stylesheet">
-    <link href="../system/host.css" rel="stylesheet">
-    <script data-main="system/host" src="../base1/require.js"></script>
+    <link href="../base1/patternfly.css" rel="stylesheet">
+    <link href="../shell/index.css" rel="stylesheet">
+    <link href="system.css" rel="stylesheet">
     <script src="../base1/jquery.js"></script>
     <script src="../base1/cockpit.js"></script>
-    <script src="../shell/bundle.js"></script>
-    <script src="../system/bundle.js"></script>
-    <script src="../domain/domain.js"></script>
-    <script src="../performance/bundle.js"></script>
+    <script src="../shell/po.js"></script>
 </head>
 <body hidden>
 
@@ -65,7 +61,7 @@
       {{^Server}}
       <div translatable="yes">Not synchronized</div>
       {{#service}}
-      <a data-goto-service="{{.}}" class="small-messages">Log messages</a>
+      <a data-goto-service="{{.}}" class="small-messages" translate>Log messages</a>
       {{/service}}
       {{/Server}}
       {{/Synched}}
@@ -137,13 +133,13 @@
                                     <a role="menuitem" data-action="restart" translatable="yes">Restart</a>
                                 </li>
                                 <li class="presentation">
-                                    <a role="menuitem" data-action="shutdown" translatable="yes">Shutdown</a>
+                                    <a role="menuitem" data-action="shutdown" translatable="yes">Shut Down</a>
                                 </li>
                             </ul>
                         </div>
                     </td>
                 </tr>
-                <tr id="system-info-performance">
+                <tr id="system-info-performance" hidden>
                     <td translatable="yes">Performance Profile</td>
                     <td class="button-location">
                     </td>
@@ -174,18 +170,18 @@
                     </button>
                     <ul class="dropdown-menu" role="menu">
                         <li role="presentation"><a role="menuitem" tabindex="-1"
-                            data-action="goto-now">Go to now</a></li>
+                            data-action="goto-now" translate>Go to now</a></li>
                         <li role="presentation" class="divider"></li>
                         <li role="presentation"><a role="menuitem" tabindex="-1"
-                            data-range="300">5 minutes</a></li>
+                            data-range="300" translate>5 minutes</a></li>
                         <li role="presentation"><a role="menuitem" tabindex="-1"
-                            data-range="3600">1 hour</a></li>
+                            data-range="3600" translate>1 hour</a></li>
                         <li role="presentation"><a role="menuitem" tabindex="-1"
-                            data-range="21600">6 hours</a></li>
+                            data-range="21600" translate>6 hours</a></li>
                         <li role="presentation"><a role="menuitem" tabindex="-1"
-                            data-range="86400">1 day</a></li>
+                            data-range="86400" translate>1 day</a></li>
                         <li role="presentation"><a role="menuitem" tabindex="-1"
-                            data-range="604800">1 week</a></li>
+                            data-range="604800" translate>1 week</a></li>
                     </ul>
                 </div>
                 <button class="btn btn-default" data-action="zoom-out">
@@ -197,22 +193,22 @@
                 </div>
             </div>
             <div>
-              <span class="plot-unit" id="server_cpu_unit">%</span><a id="link-cpu">CPU</a>
+              <span class="plot-unit" id="server_cpu_unit">%</span><a id="link-cpu" translate>CPU</a>
             </div>
             <div id="server_cpu_graph" class="server-graph zoomable-plot"></div>
             <br/>
             <div>
-              <span class="plot-unit" id="server_memory_unit"></span><a id="link-memory">Memory</a>
+              <span class="plot-unit" id="server_memory_unit"></span><a id="link-memory" translate>Memory</a>
             </div>
             <div id="server_memory_graph" class="server-graph zoomable-plot"></div>
             <br/>
             <div>
-              <span class="plot-unit" id="server_disk_io_unit"></span><a id="link-disk">Disk I/O</a>
+              <span class="plot-unit" id="server_disk_io_unit"></span><a id="link-disk" translate>Disk I/O</a>
             </div>
             <div id="server_disk_io_graph" class="server-graph zoomable-plot"></div>
             <br/>
             <div>
-              <span class="plot-unit" id="server_network_traffic_unit"></span><a id="link-network">Network Traffic</a>
+              <span class="plot-unit" id="server_network_traffic_unit"></span><a id="link-network" translate>Network Traffic</a>
             </div>
             <div id="server_network_traffic_graph" class="server-graph zoomable-plot"></div>
         </div>
@@ -266,13 +262,13 @@
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h4 class="modal-title" id="error-popup-title">Unexpected error</h4>
+                    <h4 class="modal-title" id="error-popup-title" translate>Unexpected error</h4>
                 </div>
                 <div class="modal-body">
                     <p id="error-popup-message"></p>
                 </div>
                 <div class="modal-footer">
-                    <button class="btn btn-primary" data-dismiss="modal">Close</button>
+                    <button class="btn btn-primary" data-dismiss="modal" translate>Close</button>
                 </div>
             </div>
         </div>
@@ -294,7 +290,7 @@
                     <div class="content" hidden></div>
                 </div>
                 <div class="modal-footer">
-                    <button class="btn btn-default" data-dismiss="modal">Close</button>
+                    <button class="btn btn-default" data-dismiss="modal" translate>Close</button>
                 </div>
             </div>
         </div>
@@ -305,7 +301,7 @@
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h4 class="modal-title">Change Host Name</h4>
+                    <h4 class="modal-title" translate>Change Host Name</h4>
                 </div>
                 <div class="modal-body">
                     <table class="form-table-ct">
@@ -348,8 +344,8 @@
                     </table>
                 </div>
                 <div class="modal-footer">
-                    <button class="btn btn-default" data-dismiss="modal">Cancel</button>
-                    <button class="btn btn-primary" id="sich-apply-button">Change</button>
+                    <button class="btn btn-default" data-dismiss="modal" translate>Cancel</button>
+                    <button class="btn btn-primary" id="sich-apply-button" translate>Change</button>
                 </div>
             </div>
         </div>
@@ -374,7 +370,7 @@
         <div class="modal-dialog cockpit-modal-md">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h4 class="modal-title">Change System Time</h4>
+                    <h4 class="modal-title" translate>Change System Time</h4>
                 </div>
                 <div class="modal-body">
                     <table class="form-table-ct">
@@ -390,9 +386,7 @@
                         <tr>
                             <td></td>
                             <td class="has-error">
-                                <span id="systime-timezone-error" class="help-block" translatable="yes">
-                                    Invalid time zone
-                                </span>
+                                <span id="systime-timezone-error" class="help-block" translatable="yes">Invalid time zone</span>
                             </td>
                         </tr>
                         <tr>
@@ -437,8 +431,8 @@
                     </table>
                 </div>
                 <div class="modal-footer">
-                    <button class="btn btn-default" data-dismiss="modal">Cancel</button>
-                    <button class="btn btn-primary" id="systime-apply-button">Change</button>
+                    <button class="btn btn-default" data-dismiss="modal" translate>Cancel</button>
+                    <button class="btn btn-primary" id="systime-apply-button" translate>Change</button>
                 </div>
             </div>
         </div>
@@ -451,12 +445,14 @@
                     <h4 class="modal-title"></h4>
                 </div>
                 <div class="modal-body">
-                    <textarea class="form-control" id="shutdown-message">
+                    <textarea class="form-control">
                     </textarea>
                     <table>
                         <tr>
-                            <td translatable="yes">Delay</td>
-                            <td id="shutdown-delay">
+                            <td>
+                                <label translatable="yes">Delay</label>
+                            </td>
+                            <td>
                                 <div class="btn-group bootstrap-select dropdown form-control">
                                     <button class="btn btn-default dropdown-toggle" type="button"
                                         data-toggle="dropdown">
@@ -476,21 +472,19 @@
                                 </div>
                             </td>
                             <td>
-                                <div id="shutdown-time">
-                                    <input class="form-control" value="18"/>
-                                    <span>:</span>
-                                    <input class="form-control" value="00"/>
+                                <div>
+                                    <input class="form-control shutdown-date" type="text">
+                                    <input class="form-control shutdown-hours" type="text">
+                                    :
+                                    <input class="form-control shutdown-minutes" type="text">
                                 </div>
                             </td>
                         </tr>
                     </table>
                 </div>
                 <div class="modal-footer">
-                    <button class="btn btn-default btn-danger" translatable="yes" data-dismiss="modal">
-                        Cancel
-                    </button>
-                    <button class="btn btn-danger" id="shutdown-action">
-                    </button>
+                    <button class="btn btn-default" translatable="yes" data-dismiss="modal">Cancel</button>
+                    <button class="btn btn-danger"></button>
                 </div>
             </div>
         </div>
@@ -505,9 +499,7 @@
                 <div class="modal-body" id="confirmation-dialog-body">
                 </div>
                 <div class="modal-footer">
-                    <button class="btn btn-default" translatable="yes" id="confirmation-dialog-cancel">
-                        Cancel
-                    </button>
+                    <button class="btn btn-default" translatable="yes" id="confirmation-dialog-cancel">Cancel</button>
                     <button class="btn btn-danger" id="confirmation-dialog-confirm">
                     </button>
                 </div>
@@ -515,5 +507,8 @@
         </div>
     </div>
 
+    <script src="system.js"></script>
+    <script src="../domain/domain.js"></script>
+    <script src="../performance/performance.js"></script>
 </body>
 </html>
