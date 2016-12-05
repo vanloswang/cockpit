@@ -351,6 +351,49 @@
                 });
             }
 
+    	    function deleteKubectlConfig(user) {
+                var username, clustername, shorttoken, user_location, user_args, context_location, context_args;
+                var commands = [];
+                var promise;
+
+                if (user && user.name) {
+                    username =  user.name.split("/")[0];
+                    clustername = user.name.split("/")[1];
+                    if (user.name.split("/")[2]) {
+                        shorttoken = user.name.split("/")[2];
+                        user_location =  "users.name." + username + "/" + clustername + "/" + shorttoken;
+                        context_location = "contexts.context.name." + clustername + "/" + username + "/" + clustername + "/" + shorttoken;
+                    }
+                    else {
+                        user_location = "users.name." + username + "/" + clustername;
+                        context_location = "contexts.context.name." + clustername + "/" + username + "/" + clustername;
+                    }
+
+                    if (context_location) {
+                        context_args = [ "kubectl", "config", "unset", context_location ];
+                        commands.push(context_args);
+                    }
+
+                    if (user_location) {
+                        user_args = [ "kubectl", "config", "unset", user_location ];
+                        commands.push(user_args);                       
+                    }
+                }
+
+                promise = $q.when();
+                angular.forEach(commands, function(command) {
+                    promise = promise.then(function (result) {
+                        return runCommand(command);
+                    });
+                });
+
+                return promise.then(function () {
+                    return kubectlData().then(function(data) {
+                        return loadConfigData(data);
+                    });
+                }).catch(kubectlError);
+            }
+
             function writeKubectlConfig(cluster, user, context) {
                 var defer = $q.defer();
                 var cluster_args, user_args, cmd_args;
@@ -408,6 +451,7 @@
             return {
                 prepareData: prepareData,
                 load: load,
+                deleteKubectlConfig: deleteKubectlConfig,
                 writeKubectlConfig: writeKubectlConfig,
                 populateBearerToken: populateBearerToken
             };
@@ -467,6 +511,10 @@
 
                 $scope.currentCluster = cluster;
             });
+
+            $scope.deleteUserAndContexts = function (user) {
+                return connectionActions.deleteKubectlConfig(user);
+            };
 
             $scope.saveAndConnect = function (data) {
                 return connectionActions.populateBearerToken(data.cluster, data.user)
@@ -612,6 +660,10 @@
                         return validate().then(function (data) {
                             return $scope.saveAndConnect(data);
                         });
+                    };
+
+                    $scope.deleteUser = function deleteUser(user) {
+                        return $scope.deleteUserAndContexts(user);
                     };
 
                     $scope.$on("loadData", loadData);

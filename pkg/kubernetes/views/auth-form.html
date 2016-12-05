@@ -69,7 +69,10 @@
                     </button>
                     <ul class="dropdown-menu">
                         <li ng-repeat="user in users" ng-class="{ checked: currentUser.name == user.name }">
-                            <a ng-click="selectUser(user)">{{user.name}}</a>
+                            <div>
+                                <a ng-click="selectUser(user)">{{user.name}}</a>
+                                <button title="Delete" class="btn btn-danger btn-delete pficon pficon-delete delete-entity" ng-click="deleteUser(user)"></button>
+                            </div>
                         </li>
                         <li role="separator" class="divider"></li>
                         <li ng-class="{ checked: !currentUser.name }">
