@@ -1,0 +1,44 @@
+<div class="content-filter">
+    <filter-project></filter-project>
+</div>
+
+<div>
+<table listing-table class="listing-ct pv-listing">
+    <thead>
+        <tr>
+            <td colspan="4">
+                <h3 translate>Application Templates</h3>
+            </td>
+        </tr>
+        <tr>
+            <th class="listing-ct-toggle"></th>
+            <th translate>Catergory</th>
+            <th translate>Name</th>
+            <th translate>Tags</th>
+        </tr>
+    </thead>
+    <tbody ng-repeat-start="item in templates track by item.metadata.uid"
+           ng-init="sid = item.metadata.name"
+           data-id="{{ sid }}" ng-class="{ open: listing.expanded(sid) }">
+        <tr ng-click="listing.activate(sid)" class="listing-ct-item">
+            <td ng-click="listing.toggle(sid, $event)"
+                class="listing-ct-toggle">
+                <i class="fa fa-fw"></i>
+            </td>
+            <th>{{ item.metadata.name }}</th>
+            <td>{{ item.spec | formatVolumeType }}</td>
+            <td ng-if="item.status.phase">{{ item.status.phase}}</td>
+            <td ng-if="!item.status.phase"  translate>Unknown</td>
+        </tr>
+        <tr class="listing-ct-panel" ng-if="listing.expanded(sid)" ng-init="id = sid">
+            <td listing-panel kind="pv" colspan="4"></td>
+        </tr>
+    </tbody>
+    <tbody data-ng-rubbish="" ng-if="0" ng-repeat-end></tbody>
+    <thead ng-if="!templates.length" class="listing-ct-empty">
+        <tr>
+            <td colspan="4" ng-if="!pvFailure" translate>No template are present.</td>
+        </tr>
+    </thead>
+</table>
+</div>

@@ -43,6 +43,7 @@
     require('./nodes');
     require('./topology');
     require('./volumes');
+    require('./templates');
 
     /* And the actual application */
     require('./app');
@@ -60,6 +61,7 @@
         'kubernetes.details',
         'kubernetes.topology',
         'kubernetes.volumes',
+        'kubernetes.templates',
         'kubernetes.nodes',
         'registry.images',
         'registry.policy',
