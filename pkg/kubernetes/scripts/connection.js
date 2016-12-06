@@ -352,21 +352,33 @@
             }
 
     	    function deleteKubectlConfig(user) {
-                var username, clustername, shorttoken, user_location, user_args, context_location, context_args;
+                var username, clustername, clusterurl, shorttoken, user_location, user_args, context_location, context_args;
                 var commands = [];
                 var promise;
 
                 if (user && user.name) {
                     username =  user.name.split("/")[0];
-                    clustername = user.name.split("/")[1];
-                    if (user.name.split("/")[2]) {
-                        shorttoken = user.name.split("/")[2];
-                        user_location =  "users.name." + username + "/" + clustername + "/" + shorttoken;
-                        context_location = "contexts.context.name." + clustername + "/" + username + "/" + clustername + "/" + shorttoken;
+
+                    if (username === "system:admin") {
+                        return $q.reject(new Error("User \'system:admin\' can not be deleted."));
+                    }
+
+                    clusterurl = user.name.split("/")[1];
+                    if (clusterurl === "localhost") {
+                        clustername = "default";
                     }
                     else {
-                        user_location = "users.name." + username + "/" + clustername;
-                        context_location = "contexts.context.name." + clustername + "/" + username + "/" + clustername;
+                        clustername = clusterurl;
+                    }
+
+                    if (user.name.split("/")[2]) {
+                        shorttoken = user.name.split("/")[2];
+                        user_location =  "users." + username + "/" + clusterurl + "/" + shorttoken;
+                        context_location = "contexts." + clustername + "/" + username + "/" + clusterurl + "/" + shorttoken;
+                    }
+                    else {
+                        user_location = "users." + username + "/" + clusterurl;
+                        context_location = "contexts." + clustername + "/" + username + "/" + clusterurl;
                     }
 
                     if (context_location) {
