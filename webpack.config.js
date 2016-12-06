@@ -324,6 +324,9 @@ if (!section || section.indexOf("base1") === 0) {
     }, {
         from: bowerdir + path.sep + "jquery/dist/jquery.js",
         to: "base1/jquery.js"
+    }, {
+        from: srcdir + path.sep + "po/po.js",
+        to: "shell/po.js"
     });
 }
 
@@ -334,7 +337,6 @@ module.exports = {
             "angular-route": "angular-route/angular-route.js",
             "d3": "d3/d3.js",
             "moment": "momentjs/moment.js",
-            "mustache": "mustache/mustache.js",
             "react": "react-lite-cockpit/dist/react-lite.js",
             "term": "term.js-cockpit/src/term.js",
         },

@@ -59,7 +59,7 @@
             var old = e.outerHTML;
             var translated = cockpit.gettext(e.getAttribute("context"), $(e).text());
             $(e).removeAttr("translatable").text(translated);
-            tmpl.replace(old, e.outerHTML);
+            tmpl = tmpl.replace(old, e.outerHTML);
         });
         mustache.parse(tmpl);
         return tmpl;
@@ -200,8 +200,9 @@
                 }
             }, data, address_data);
 
-            var text = mustache.render(templates[template], context);
-            self.get_sel(".modal-content").html(text);
+            var output = $(mustache.render(templates[template], context));
+            cockpit.translate(output);
+            self.get_sel(".modal-content").html(output);
         };
 
         self.render_error = function render_error(error) {
