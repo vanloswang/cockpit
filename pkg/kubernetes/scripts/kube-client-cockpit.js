@@ -510,10 +510,27 @@
                 }
 
                 function send(data) {
-                    if (base64)
+                    if (base64) {
+                        /*
+                         * HACK: container-terminal sends Width/Height commands but
+                         * many of the kubernetes implementations don't yet support
+                         * that. So filter them out here for now.
+                         */
+                        if (data[0] === "4")
+                            return;
                         data = window.atob(data.slice(1));
+                    }
+
                     if (channel)
                         channel.send(data);
+                }
+
+                var valid = true;
+                if (protocols) {
+                    if (angular.isArray(protocols))
+                        valid = base64 = protocols.indexOf("base64.channel.k8s.io") !== -1;
+                    else
+                        valid = base64 = protocols === "base64.channel.k8s.io";
                 }
 
                 /* A fake WebSocket */
@@ -527,14 +544,6 @@
                     close: { value: close },
                     send: { value: send },
                 });
-
-                var valid = true;
-                if (protocols) {
-                    if (angular.isArray(protocols))
-                        valid = base64 = protocols.indexOf("base64.channel.k8s.io") !== -1;
-                    else
-                        valid = base64 = "base64.channel.k8s.io";
-                }
 
                 if (valid) {
                     window.setTimeout(open);
@@ -553,6 +562,7 @@
         "$injector",
         function($q, $injector) {
             return function CockpitKubeSocket(url, config) {
+                var base64 = false;
                 var connect;
                 var state = 0; /* CONNECTING */
                 var ws = { };
@@ -587,6 +597,14 @@
                 }
 
                 function send(data) {
+                    /*
+                     * HACK: container-terminal sends Width/Height commands but
+                     * many of the kubernetes implementations don't yet support
+                     * that. So filter them out here for now.
+                     */
+                    if (base64 && data[0] === "4")
+                        return;
+
                     if (channel)
                         channel.send(data);
                 }
@@ -603,13 +621,15 @@
                     send: { value: send },
                 });
 
+                base64 = protocols.indexOf("base64.channel.k8s.io") !== -1;
+
                 $q.when(connect, function connected(options) {
                     cockpit.event_target(ws);
 
                     channel = cockpit.channel(angular.extend({ }, options, {
                         payload: "websocket-stream1",
                         path: url,
-                        protocols: protocols,
+                        protocols: protocols.length > 0 ? protocols : undefined,
                     }));
 
                     channel.addEventListener("close", function(ev, options) {
@@ -883,7 +903,8 @@
         "CockpitKubeRequest",
         "cockpitKubectlConfig",
         "cockpitConnectionInfo",
-        function($q, CockpitKubeRequest, cockpitKubectlConfig, info) {
+        "cockpitBrowserStorage",
+        function($q, CockpitKubeRequest, cockpitKubectlConfig, info, browser) {
             var defer = null;
 
             return function cockpitKubeDiscover(force) {
@@ -891,7 +912,7 @@
                     return defer.promise;
 
                 var last, req, kubectl, loginOptions;
-                var loginData = window.localStorage.getItem('login-data');
+                var loginData = browser.localStorage.getItem('login-data', true);
                 defer = $q.defer();
 
                 var schemes = [
@@ -1113,6 +1134,20 @@
         }
     ])
 
+    .factory("cockpitBrowserStorage", [
+        "$window",
+        function($window) {
+            var base = $window;
+            if (cockpit && cockpit.sessionStorage && cockpit.localStorage)
+                base = cockpit;
+
+            return {
+                sessionStorage: base.sessionStorage,
+                localStorage: base.localStorage
+            };
+        }
+    ])
+
     .factory('cockpitConnectionInfo', function () {
         return {
             type: null,
@@ -1151,27 +1186,9 @@
     })
 
     .factory('CockpitTranslate', function() {
-        // TODO: Implement translations
         return {
-            gettext: function (context, value) {
-                if (arguments.length > 1)
-                    return value;
-                else
-                    return context;
-            },
-            ngettext: function ngettext(context, string1, stringN, num) {
-                /* Missing first parameter */
-                if (arguments.length == 3) {
-                    num = stringN;
-                    stringN = string1;
-                    string1 = context;
-                    context = undefined;
-                }
-
-                if (num == 1)
-                    return string1;
-                return stringN;
-            }
+            gettext: cockpit.gettext,
+            ngettext: cockpit.ngettext,
         };
     });
 }());

@@ -46,26 +46,28 @@ WHITELIST = os.path.join(TEST_DIR, "github-whitelist")
 WHITELIST_LOCAL = "~/.config/github-whitelist"
 
 HOSTNAME = socket.gethostname().split(".")[0]
-DEFAULT_IMAGE = os.environ.get("TEST_OS", "fedora-24")
+DEFAULT_IMAGE = os.environ.get("TEST_OS", "fedora-25")
 
 BASELINE_PRIORITY = 10
 
 DEFAULT_VERIFY = {
-    'verify/fedora-23': [ 'master' ],
-    'verify/fedora-24': [ 'master', 'pulls' ],
-    'verify/centos-7': [ 'master', 'pulls' ],
-    'verify/continuous-atomic': [ 'master' ],
-    'verify/rhel-7': [ 'master', 'pulls' ],
-    'verify/fedora-atomic': [ 'master', 'pulls' ],
-    'verify/rhel-atomic': [ 'master', 'pulls' ],
-    'verify/debian-unstable': [ 'master', 'pulls' ],
-    'verify/fedora-testing': [ 'master' ],
-    'avocado/fedora-23': [ 'master', 'pulls' ],
+    'avocado/fedora-24': [ 'master', 'pulls' ],
+    'container/kubernetes': [ 'master', 'pulls' ],
+    'koji/fedora-24': [ ],
+    'koji/fedora-25': [ ],
     'selenium/firefox': [ 'master', 'pulls' ],
     'selenium/chrome': [ 'master', 'pulls' ],
-    'container/kubernetes': [ 'master', 'pulls' ],
-    'koji/fedora-23': [ ],
-    'koji/fedora-24': [ ],
+    'verify/centos-7': [ 'master', 'pulls' ],
+    'verify/continuous-atomic': [ 'master' ],
+    'verify/debian-8': [ 'master', 'pulls', ],
+    'verify/debian-unstable': [ 'master', 'pulls' ],
+    'verify/fedora-24': [ ],
+    'verify/fedora-25': [ 'master', 'pulls' ],
+    'verify/fedora-atomic': [ 'master', 'pulls' ],
+    'verify/fedora-testing': [ ],
+    'verify/rhel-7': [ 'master', 'pulls' ],
+    'verify/rhel-atomic': [ 'master', 'pulls' ],
+    'verify/ubuntu-1604': [ 'master', 'pulls' ],
 }
 
 TESTING = "Testing in progress"
@@ -73,34 +75,43 @@ NOT_TESTED = "Not yet tested"
 NO_TESTING = "Manual testing required"
 
 DEFAULT_IMAGE_REFRESH = {
-    'fedora-23': {
-        'triggers': [
-            "verify/fedora-23",
-            "verify/fedora-atomic",  # builds in fedora-23
-            "avocado/fedora-23",
-            "selenium/firefox",
-            "selenium/chrome"
-        ]
-    },
-    'fedora-24': {
-        'triggers': [
-            "verify/fedora-24",
-        ]
-    },
-    'fedora-atomic': {
-        'triggers': [ "verify/fedora-atomic" ]
-    },
-    'debian-unstable': {
-        'triggers': [ "verify/debian-unstable" ]
-    },
-    'fedora-testing': {
-        'triggers': [ "verify/fedora-testing" ]
-    },
     'centos-7': {
         'triggers': [ "verify/centos-7", ]
     },
     'continuous-atomic': {
         'triggers': [ "verify/continuous-atomic", ]
+    },
+    'debian-unstable': {
+        'triggers': [ "verify/debian-unstable" ]
+    },
+    'fedora-24': {
+        'triggers': [
+            "avocado/fedora-24",
+            "selenium/firefox",
+            "selenium/chrome",
+            "verify/fedora-24",
+            "verify/fedora-atomic",  # builds in fedora-24
+        ]
+    },
+    'fedora-25': {
+        'triggers': [
+            "verify/fedora-25",
+        ]
+    },
+    'fedora-atomic': {
+        'triggers': [ "verify/fedora-atomic" ]
+    },
+    'fedora-testing': {
+        'triggers': [ "verify/fedora-testing" ]
+    },
+    'ubuntu-1604': {
+        'triggers': [ "verify/ubuntu-1604", ]
+    },
+    'openshift': {
+        'triggers': [ "container/kubernetes",
+                      "verify/fedora-25",
+                      "verify/rhel-7" ],
+        'refresh-days': 30
     }
 }
 
@@ -570,10 +581,15 @@ class GitHub(object):
             revision = pull["head"]["sha"]
             statuses = self.statuses(revision)
             login = pull["head"]["user"]["login"]
+            base = pull["base"]["ref"]  # The branch this pull request targets
 
             for context in contexts.keys():
                 status = statuses.get(context, None)
                 baseline = BASELINE_PRIORITY
+
+                # modify the baseline slightly to favor older pull requests, so that we don't
+                # end up with a bunch of half tested pull requests
+                baseline += 1.0 - (min(100000, float(number)) / 100000)
 
                 # Only create new status for those requested
                 if not status:
@@ -590,8 +606,8 @@ class GitHub(object):
 
                 (priority, changes) = self.prioritize(status, labels, baseline, context)
                 if update_status(revision, context, status, changes):
-                    results.append(GitHub.TaskEntry(priority, GithubPullTask("pull-%d" % number, revision,
-                                                                             "pull/%d/head" % number, context)))
+                    pulltask = GithubPullTask("pull-%d" % number, revision, "pull/%d/head" % number, context, base)
+                    results.append(GitHub.TaskEntry(priority, pulltask))
 
         return results
 
@@ -604,7 +620,8 @@ class GitHub(object):
             for issue in issues:
                 if issue['title'] == ISSUE_TITLE_IMAGE_REFRESH.format(image):
                     age = time.time() - time.mktime(time.strptime(issue['created_at'], "%Y-%m-%dT%H:%M:%SZ"))
-                    wait_time = IMAGE_REFRESH - (age / (24 * 60 * 60))
+                    refresh_days = config.get("refresh-days", IMAGE_REFRESH)
+                    wait_time = refresh_days - (age / (24 * 60 * 60))
                     if wait_time > wait_times[image]:
                         wait_times[image] = wait_time
         return wait_times

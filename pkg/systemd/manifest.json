@@ -1,6 +1,10 @@
 {
-    "version": 0,
+    "version": "@VERSION@",
     "name": "system",
+
+    "requires": {
+	"cockpit": "122"
+    },
 
     "menu": {
         "index": {

@@ -19,6 +19,9 @@
 
 /* ---------------------------------------------------------------------------------------------------- */
 
+@import "/page.css";
+@import "/listing.css";
+
 /* Used to hide angular elements until they are ready */
 [ng\:cloak], [ng-cloak], [data-ng-cloak], [x-ng-cloak], .ng-cloak, .x-ng-cloak {
     display: none !important;
@@ -69,4 +72,8 @@ table.listing-ct.listingtop thead h3 {
 
 .listing-ct-head .display-inline {
     display: inline;
+}
+
+.listing-ct-head .listing-ct-actions {
+    margin-top: -3px;
 }

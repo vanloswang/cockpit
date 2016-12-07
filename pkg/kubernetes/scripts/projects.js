@@ -113,11 +113,6 @@
             var namespace = $routeParams["namespace"] || "";
             $scope.projName = namespace;
             if (namespace) {
-                var projObj = select().kind("Project").name(namespace);
-                if (!projObj || projObj.length < 1) {
-                    $scope.project = null;
-                    return;
-                }
                 $scope.listing = new ListingState($scope);
                 $scope.project = function() {
                     return select().kind("Project").name(namespace).one();
@@ -160,11 +155,6 @@
             var user = $routeParams["user"] || "";
             $scope.userName = user;
             if (user) {
-                var userObj = select().kind("User").name(user);
-                if (!userObj || userObj.length < 1) {
-                    $scope.user = null;
-                    return;
-                }
                 $scope.user = function() {
                     return select().kind("User").name(user).one();
                 };
@@ -421,7 +411,7 @@
             var sharedResource = "imagestreams/layers";
             var sharedRole = "registry-viewer";
             var sharedKind = "Group";
-            var anonymousGroup = "system:anonymous";
+            var anonymousGroup = "system:unauthenticated";
             var sharedGroup = "system:authenticated";
             var registryAdmin = "registry-admin";
 
@@ -457,14 +447,20 @@
                 if (!response)
                     return null;
 
+                var projState = {};
+                projState[anonymousGroup] = null;
+                projState[sharedGroup] = null;
+
                 var i, len, groups = response.groups || [];
                 for (i = 0, len = groups.length; i < len; i++) {
-                    if (groups[i] == anonymousGroup)
-                        return "anonymous";
-                    else if (groups[i] == sharedGroup)
-                        return "shared";
+                    if (projState.hasOwnProperty(groups[i]))
+                        projState[groups[i]] = true;
                 }
 
+                if (projState[anonymousGroup])
+                    return "anonymous";
+                else if (projState[sharedGroup])
+                    return "shared";
                 return "private";
             }
 
@@ -980,10 +976,12 @@
         '$location',
         '$timeout',
         "kubeMethods",
-        function($q, $scope, kselect, dialogData, projectData, $location, $timeout, methods) {
+        "gettextCatalog",
+        function($q, $scope, kselect, dialogData, projectData, $location, $timeout, methods, gettextCatalog) {
             var project = dialogData.project || { };
             var meta = project.metadata || { };
             var annotations = meta.annotations || { };
+            var _ = gettextCatalog.getString.bind(gettextCatalog);
 
             var DISPLAY = "openshift.io/display-name";
             var DESCRIPTION = "openshift.io/description";
@@ -1017,9 +1015,9 @@
             $scope.fields = fields;
             $scope.labels = {
                 access: {
-                    "private": "Private: Allow only specific users or groups to pull images",
-                    "shared": "Shared: Allow any authenticated user to pull images",
-                    "anonymous" : "Anonymous: Allow all unauthenticated users to pull images",
+                    "private": _("Private: Allow only specific users or groups to pull images"),
+                    "shared": _("Shared: Allow any authenticated user to pull images"),
+                    "anonymous" : _("Anonymous: Allow all unauthenticated users to pull images"),
                 }
             };
             function getProjects() {

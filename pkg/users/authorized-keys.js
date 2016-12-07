@@ -61,14 +61,18 @@
                         obj = { raw: lines[i + 1] };
                         keys.push(obj);
                         match = lines[i].trim().match(PUBKEY_RE);
-                        obj.valid = !!match;
+                        obj.valid = !!match && !!obj.raw;
                         if (match) {
                             obj.size = match[1];
                             obj.fp = match[2];
                             obj.comment = match[3].trim();
-                            if (obj.comment == "authorized_keys")
+                            if (obj.comment == "authorized_keys" || obj.comment == "no comment")
                                 obj.comment = null;
                             obj.algorithm = match[4];
+
+                            /* Old ssh-keygen versions need us to find the comment ourselves */
+                            if (!obj.comment && obj.raw)
+                                obj.comment = obj.raw.split(" ").splice(0, 2).join(" ") || null;
                         }
                     }
                 })
@@ -102,7 +106,7 @@
                     var obj = keys[0];
                     if (obj && obj.valid) {
                         df.notify(_("Adding key"));
-                        cockpit.script(adder, [ user_name, home_dir ], { superuser: "try" })
+                        cockpit.script(adder, [ user_name, home_dir ], { superuser: "try", err: "message" })
                             .input(obj.raw + "\n")
                             .done(function() {
                                 df.resolve();

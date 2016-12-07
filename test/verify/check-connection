@@ -88,9 +88,17 @@ class TestConnection(MachineCase):
         b.expect_load()
         b.enter_page("/system")
 
+        # Reauthorization can fail due to disconnects above
+        self.allow_journal_messages("cockpit-polkit: user admin reauthorization failed")
+        self.allow_restart_journal_messages()
+
+        # Debian 8 doesn't have systemd with coredump support
+        if m.image in [ "debian-8" ]:
+            return
+
         # Lets crash a process and see if we get a proper backtrace in the logs
         # This helps with debugging failures in the tests elsewhere
-        if m.image in ["debian-unstable"]:
+        if m.image in ["debian-unstable", "ubuntu-1604"]:
             cron = "cron"
         else:
             cron = "crond"
@@ -98,9 +106,9 @@ class TestConnection(MachineCase):
         m.execute("kill -SEGV $(pgrep {0})".format(cron))
         wait(lambda: m.execute("journalctl -b | grep 'Process.*cron.*of user.*dumped core.'"))
 
-        # Reauthorization can fail due to disconnects above
-        self.allow_journal_messages("cockpit-polkit: user admin reauthorization failed")
-        self.allow_restart_journal_messages()
+        # Make sure the core dumps exist in the directory, so we can download them
+        cores = m.execute("find /var/lib/systemd/coredump -type f")
+        self.assertNotEqual(cores, "")
 
     def testTls(self):
         m = self.machine
@@ -125,7 +133,7 @@ class TestConnection(MachineCase):
         except subprocess.CalledProcessError, ex:
             m.message(ex.output)
             # Some operating systems fail SSL3 on the server side
-            if m.image in [ "debian-unstable" ]:
+            if m.image in [ "debian-unstable", "fedora-25", "fedora-testing" ]:
                 self.assertIn("ssl handshake failure", ex.output)
             else:
                 self.assertIn("wrong version number", ex.output)
@@ -177,7 +185,7 @@ class TestConnection(MachineCase):
 
         self.allow_journal_messages('peer did not close io when expected')
 
-    @unittest.skipIf("atomic" in os.environ.get("TEST_OS", ""), "different way of changing ports")
+    @skipImage("Atomic changes ports differently", "fedora-atomic", "rhel-atomic", "continuous-atomic")
     def testSocketPort(self):
         m = self.machine
 
@@ -187,12 +195,36 @@ class TestConnection(MachineCase):
         m.start_cockpit(tls=True)
 
         output = m.execute('curl -k https://localhost 2>&1 || true')
-        self.assertIn('Cockpit starting...', output)
+        self.assertIn('Loading...', output)
 
         output = m.execute('curl -k https://localhost:9090 2>&1 || true')
         self.assertIn('Connection refused', output)
 
         self.allow_journal_messages(".*Peer failed to perform TLS handshake")
+
+    @skipImage("Atomic doesn't have cockpit-ws", "fedora-atomic", "rhel-atomic", "continuous-atomic")
+    def testCommandline(self):
+        m = self.machine
+        m.execute('mkdir -p /test/cockpit/ws-certs.d && echo "[WebService]\nLoginTitle = A Custom Title" > /test/cockpit/cockpit.conf')
+        m.execute('mkdir -p /test/cockpit/static/ && echo "<!DOCTYPE html><html><head></head><body><p>Custom Default Root</p></body></html>" > /test/cockpit/static/login.html')
+
+        m.execute("XDG_CONFIG_DIRS=/test XDG_DATA_DIRS=/test remotectl certificate --ensure")
+        self.assertTrue(m.execute("ls /test/cockpit/ws-certs.d/*"))
+        self.assertFalse(m.execute("ls /etc/cockpit/ws-certs.d/* || true"))
+
+        executable = "/usr/libexec/cockpit-ws"
+        if "debian" in m.image or "ubuntu" in m.image:
+            executable = "/usr/lib/cockpit/cockpit-ws"
+
+        m.execute("XDG_CONFIG_DIRS=/test XDG_DATA_DIRS=/test {} --port 9000 --address 127.0.0.1 0<&- &>/dev/null &".format(executable))
+
+        # The port may not be available immediately, so wait for it
+        wait(lambda: 'Custom Default Root' in m.execute('curl -s -k https://localhost:9000/'))
+        output = m.execute('curl -s -k https://localhost:9000/')
+        self.assertIn('A Custom Title', output)
+
+        output = m.execute('curl -s -S -k https://{}:9000/ 2>&1 || true'.format(m.address))
+        self.assertIn('Connection refused', output)
 
 if __name__ == '__main__':
     test_main()

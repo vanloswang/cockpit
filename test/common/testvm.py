@@ -562,7 +562,7 @@ class Machine:
         return messages
 
     def get_admin_group(self):
-        if "debian" in self.image:
+        if "debian" in self.image or "ubuntu" in self.image:
             return "sudo"
         else:
             return "wheel"
@@ -587,7 +587,7 @@ class Machine:
                 cmd += "/usr/bin/docker run -d --privileged --pid=host -v /:/host cockpit/ws /container/atomic-run --local-ssh\n"
             else:
                 cmd += "/usr/bin/docker run -d --privileged --pid=host -v /:/host cockpit/ws /container/atomic-run --local-ssh --no-tls\n"
-            with Timeout(seconds=30, error_message="Timeout while waiting for cockpit/ws to start"):
+            with Timeout(seconds=90, error_message="Timeout while waiting for cockpit/ws to start"):
                 self.execute(script=cmd)
             if atomic_wait_for_host:
                 self.wait_for_cockpit_running(atomic_wait_for_host)
@@ -611,7 +611,7 @@ class Machine:
         """Restart Cockpit.
         """
         if "atomic" in self.image:
-            with Timeout(seconds=30, error_message="Timeout while waiting for cockpit/ws to restart"):
+            with Timeout(seconds=90, error_message="Timeout while waiting for cockpit/ws to restart"):
                 self.execute("docker restart `docker ps | grep cockpit/ws | awk '{print $1;}'`")
             self.wait_for_cockpit_running()
         else:
@@ -621,7 +621,7 @@ class Machine:
         """Stop Cockpit.
         """
         if "atomic" in self.image:
-            with Timeout(seconds=30, error_message="Timeout while waiting for cockpit/ws to stop"):
+            with Timeout(seconds=60, error_message="Timeout while waiting for cockpit/ws to stop"):
                 self.execute("docker kill `docker ps | grep cockpit/ws | awk '{print $1;}'`")
         else:
             self.execute("systemctl stop cockpit.socket")
@@ -1152,11 +1152,12 @@ class VirtMachine(Machine):
     def reset_reboot_flag(self):
         self.event_handler.reset_domain_reboot_status(self._domain)
 
-    def wait_reboot(self):
+    def wait_reboot(self, wait_for_running_timeout=120):
+        self.disconnect()
         if not self.event_handler.wait_for_reboot(self._domain):
             raise Failure("system didn't notify us about a reboot")
         # we may have to check for a new dhcp lease, but the old one can be active for a bit
-        if not self.wait_execute(timeout_sec=60, get_new_address=lambda: self._ip_from_mac(self.macaddr, timeout_sec=5)):
+        if not self.wait_execute(timeout_sec=wait_for_running_timeout, get_new_address=lambda: self._ip_from_mac(self.macaddr, timeout_sec=5)):
             raise Failure("system didn't reboot properly")
         self.wait_user_login()
 

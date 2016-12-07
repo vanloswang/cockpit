@@ -4,27 +4,20 @@ set -eu
 
 tar=$1
 
-version=$(echo $1 | sed -n 's|.*cockpit-\([^ -/]\+\)\.tar\..*|\1|p')
+version=$(echo "$1" | sed -n 's|.*cockpit-\([^ -/]\+\)\.tar\..*|\1|p')
 if [ -z "$version" ]; then
     echo "make-srpm: couldn't parse version from tarball: $1"
     exit 2
 fi
 
+# We actually modify the spec so that the srpm is standalone buildable
 modify_spec() {
-case $version in
-wip)
-sed '1i\
-%define gitcommit wip'
-;;
-*)
-sed "1i\
-%define tag $version"
-esac
+sed -e "/^Version:.*/d" -e "1i\
+%define wip wip\nVersion: $version\n"
 }
 
 tmpdir=$(mktemp -d $PWD/srpm-build.XXXXXX)
 tar xaf "$1" -O cockpit-$version/tools/cockpit.spec | modify_spec > $tmpdir/cockpit.spec
-
 
 rpmbuild -bs \
          --quiet \

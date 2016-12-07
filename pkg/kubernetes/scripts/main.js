@@ -23,6 +23,7 @@
     /* Tell webpack what to bundle here */
     var angular = require('angular');
     require('angular-route');
+    require('angular-gettext/dist/angular-gettext.js');
     require('angular-bootstrap/ui-bootstrap.js');
     require('kubernetes-object-describer/dist/object-describer.js');
     require('kubernetes-container-terminal/dist/container-terminal.js');
@@ -44,11 +45,12 @@
     require('./volumes');
 
     /* And the actual application */
-    require('./app.js');
+    require('./app');
 
     angular.module('kubernetes', [
         'ngRoute',
         'ui.bootstrap',
+        'gettext',
         'kubeClient',
         'kubeClient.cockpit',
         'kubernetes.app',
@@ -74,11 +76,12 @@
         'KubeFormatProvider',
         'kubernetesContainerSocketProvider',
         'KubeDiscoverSettingsProvider',
+        'KubeBrowserStorageProvider',
         '$provide',
         function($routeProvider, KubeWatchProvider, KubeRequestProvider,
                  KubeSocketProvider, KubeTranslateProvider, KubeFormatProvider,
                  kubernetesContainerSocketProvider, KubeDiscoverSettingsProvider,
-                 $provide) {
+                 KubeBrowserStorageProvider, $provide) {
 
             $routeProvider.otherwise({ redirectTo: '/' });
 
@@ -89,6 +92,7 @@
             KubeTranslateProvider.KubeTranslateFactory = "CockpitTranslate";
             KubeFormatProvider.KubeFormatFactory = "CockpitFormat";
             KubeDiscoverSettingsProvider.KubeDiscoverSettingsFactory = "cockpitKubeDiscoverSettings";
+            KubeBrowserStorageProvider.KubeBrowserStorageFactory = "cockpitBrowserStorage";
 
             /* Tell the container-terminal that we want to be involved in WebSocket creation */
             kubernetesContainerSocketProvider.WebSocketFactory = 'cockpitContainerWebSocket';

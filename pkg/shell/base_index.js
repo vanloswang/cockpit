@@ -19,12 +19,11 @@
 
 var phantom_checkpoint = phantom_checkpoint || function () { };
 
-define([
-    "jquery",
-    "base1/cockpit",
-    "manifests",
-], function($, cockpit, local_manifests) {
+(function() {
     "use strict";
+
+    var $ = require("jquery");
+    var cockpit = require("cockpit");
 
     var shell_embedded = window.location.pathname.indexOf(".html") !== -1;
     var _ = cockpit.gettext;
@@ -477,14 +476,21 @@ define([
          * given state, then we try to find one that would show a sidebar.
          */
 
-        /* Encode navigate state into a string */
-        function encode(state, sidebar) {
+        /* Encode navigate state into a string
+         * If with_root is true the configured
+         * url root will be added to the generated
+         * url. with_root should be used when
+         * navigating to a new url or updating
+         * history, but is not needed when simply
+         * generating a string for a link.
+         */
+        function encode(state, sidebar, with_root) {
             var path = [];
             if (state.host && (sidebar || state.host !== "localhost"))
                 path.push("@" + state.host);
             if (state.component)
                 path.push.apply(path, state.component.split("/"));
-            var string = cockpit.location.encode(path);
+            var string = cockpit.location.encode(path, null, with_root);
             if (state.hash && state.hash !== "/")
                 string += "#" + state.hash;
             return string;
@@ -530,7 +536,7 @@ define([
                 navbar.hide();
             } else {
                 var local_compiled = new CompiledComponants();
-                local_compiled.load(local_manifests, "dashboard");
+                local_compiled.load(cockpit.manifests, "dashboard");
                 navbar.append(local_compiled.ordered("dashboard").map(links));
             }
         }
@@ -588,7 +594,8 @@ define([
             if (shell_embedded)
                 target = window.location;
             else
-                target = encode(state);
+                target = encode(state, null, true);
+
             if (replace) {
                 history.replaceState(state, "", target);
                 return false;
@@ -646,6 +653,7 @@ define([
 
             build_navbar();
             self.navigate();
+            cockpit.translate();
             $("body").show();
         };
 
@@ -661,10 +669,7 @@ define([
                 return;
             oops.children("a").on("click", function() {
                 $("#error-popup-title").text(_("Unexpected error"));
-                var details = _("Cockpit had an unexpected internal error. <br/><br/>") +
-                              _("You can try restarting Cockpit by pressing refresh in your browser. ") +
-                              _("The javascript console contains details about this error ") +
-                              _("(<b>Ctrl-Shift-J</b> in most browsers).");
+                var details = _("Cockpit had an unexpected internal error. <br/><br/>You can try restarting Cockpit by pressing refresh in your browser. The javascript console contains details about this error (<b>Ctrl-Shift-J</b> in most browsers).");
                 $("#error-popup-message").html(details);
                 $('#error-popup').modal('show');
             });
@@ -705,10 +710,12 @@ define([
              * to produce this list. Perhaps we would include it somewhere in a
              * separate automatically generated file. Need to see.
              */
-            var manifest = local_manifests["shell"] || { };
-            $(".display-language-menu").toggle(!!manifest.linguas);
+            var manifest = cockpit.manifests["shell"] || { };
+            $(".display-language-menu").toggle(!!manifest.locales);
             var language = document.cookie.replace(/(?:(?:^|.*;\s*)CockpitLang\s*\=\s*([^;]*).*$)|^.*$/, "$1");
-            $.each(manifest.linguas || { }, function(code, name) {
+            if (!language)
+                language = "en-us";
+            $.each(manifest.locales || { }, function(code, name) {
                 var el = $("<option>").text(name).val(code);
                 if (code == language)
                     el.attr("selected", "true");
@@ -743,7 +750,7 @@ define([
         function setup_account(id, user) {
             $(id).on("click", function() {
                 self.jump({ host: "localhost", component: "users", hash: "/" + user.name });
-            });
+            }).show();
         }
 
         /* User information */
@@ -851,7 +858,7 @@ define([
         }
     });
 
-    return {
+    module.exports = {
         new_index_from_proto: function (proto) {
             var o = new Object(proto);
             Index.call(o);
@@ -862,4 +869,4 @@ define([
             return new CompiledComponants();
         },
     };
-});
+}());

@@ -29,6 +29,7 @@
 #include "cockpitwebfilter.h"
 
 #include "common/cockpiterror.h"
+#include "common/cockpitlocale.h"
 #include "common/cockpittemplate.h"
 
 #include <errno.h>
@@ -62,6 +63,8 @@ struct _CockpitWebResponse {
   const gchar *path;
   gchar *full_path;
   gchar *query;
+  gchar *url_root;
+
   CockpitCacheType cache_type;
 
   /* The output queue */
@@ -153,6 +156,7 @@ cockpit_web_response_finalize (GObject *object)
 
   g_free (self->full_path);
   g_free (self->query);
+  g_free (self->url_root);
   g_assert (self->io == NULL);
   g_assert (self->out == NULL);
   g_queue_free_full (self->queue, (GDestroyNotify)g_bytes_unref);
@@ -191,6 +195,7 @@ cockpit_web_response_class_init (CockpitWebResponseClass *klass)
  */
 CockpitWebResponse *
 cockpit_web_response_new (GIOStream *io,
+                          const gchar *original_path,
                           const gchar *path,
                           const gchar *query,
                           GHashTable *in_headers)
@@ -198,6 +203,7 @@ cockpit_web_response_new (GIOStream *io,
   CockpitWebResponse *self;
   GOutputStream *out;
   const gchar *connection;
+  gint offset;
 
   /* Trying to be a somewhat performant here, avoiding properties */
   self = g_object_new (COCKPIT_TYPE_WEB_RESPONSE, NULL);
@@ -214,8 +220,17 @@ cockpit_web_response_new (GIOStream *io,
                   G_OBJECT_TYPE_NAME (out));
     }
 
+  self->url_root = NULL;
   self->full_path = g_strdup (path);
   self->path = self->full_path;
+
+  if (path && original_path)
+    {
+      offset = strlen (original_path) - strlen (path);
+      if (offset > 0 && g_strcmp0 (original_path + offset, path) == 0)
+        self->url_root = g_strndup (original_path, offset);
+    }
+
   self->query = g_strdup (query);
   if (self->path)
     self->logname = self->path;
@@ -244,6 +259,17 @@ cockpit_web_response_get_path (CockpitWebResponse *self)
 {
   g_return_val_if_fail (COCKPIT_IS_WEB_RESPONSE (self), NULL);
   return self->path;
+}
+
+/**
+ * cockpit_web_response_get_url_root:
+ * @self: the response
+ *
+ * Returns: The url root portion of the original path that was removed
+ */
+const gchar *
+cockpit_web_response_get_url_root (CockpitWebResponse *self) {
+  return self->url_root;
 }
 
 /**
@@ -960,6 +986,17 @@ substitute_message (const gchar *variable,
   return NULL;
 }
 
+static GBytes *
+substitute_hash_value (const gchar *variable,
+                       gpointer user_data)
+{
+  GHashTable *data = user_data;
+  gchar *value = g_hash_table_lookup (data, variable);
+  if (value)
+    return g_bytes_new (value, strlen (value));
+  return g_bytes_new ("", 0);
+}
+
 /**
  * cockpit_web_response_error:
  * @self: the response
@@ -979,6 +1016,7 @@ cockpit_web_response_error (CockpitWebResponse *self,
 {
   va_list var_args;
   gchar *reason = NULL;
+  gchar *escaped = NULL;
   const gchar *message;
   GBytes *input = NULL;
   GList *output, *l;
@@ -1049,6 +1087,17 @@ cockpit_web_response_error (CockpitWebResponse *self,
 
   if (!input)
     input = g_bytes_new_static (default_failure_template, strlen (default_failure_template));
+  output = cockpit_template_expand (input, substitute_message,
+                                    "@@", "@@", (gpointer)message);
+  g_bytes_unref (input);
+
+  /* If sending arbitrary messages, make sure they're escaped */
+  if (reason)
+    {
+      g_strstrip (reason);
+      escaped = g_uri_escape_string (reason, " :", FALSE);
+      message = escaped;
+    }
 
   if (headers)
     {
@@ -1061,9 +1110,6 @@ cockpit_web_response_error (CockpitWebResponse *self,
       cockpit_web_response_headers (self, code, message, -1, "Content-Type", "text/html; charset=utf8", NULL);
     }
 
-  output = cockpit_template_expand (input, substitute_message, (gpointer)message);
-  g_bytes_unref (input);
-
   for (l = output; l != NULL; l = g_list_next (l))
     {
       if (!cockpit_web_response_queue (self, l->data))
@@ -1074,6 +1120,7 @@ cockpit_web_response_error (CockpitWebResponse *self,
   g_list_free_full (output, (GDestroyNotify)g_bytes_unref);
 
   g_free (reason);
+  g_free (escaped);
 }
 
 /**
@@ -1130,18 +1177,32 @@ path_has_prefix (const gchar *path,
   return FALSE;
 }
 
-/**
- * cockpit_web_response_file:
- * @response: the response
- * @path: escaped path, or NULL to get from response
- * @roots: directories to look for file in
- *
- * Serve a file from disk as an HTTP response.
- */
-void
-cockpit_web_response_file (CockpitWebResponse *response,
-                           const gchar *escaped,
-                           const gchar **roots)
+gchar **
+cockpit_web_response_resolve_roots (const gchar **input)
+{
+  GPtrArray *roots;
+  char *path;
+  gint i;
+
+  roots = g_ptr_array_new ();
+  for (i = 0; input && input[i]; i++)
+    {
+      path = realpath (input[i], NULL);
+      if (path == NULL)
+        g_debug ("couldn't resolve document root: %s: %m", input[i]);
+      else
+        g_ptr_array_add (roots, path);
+    }
+  g_ptr_array_add (roots, NULL);
+  return (gchar **)g_ptr_array_free (roots, FALSE);
+}
+
+static void
+web_response_file (CockpitWebResponse *response,
+                   const gchar *escaped,
+                   const gchar **roots,
+                   CockpitTemplateFunc template_func,
+                   gpointer user_data)
 {
   const gchar *csp_header;
   GError *error = NULL;
@@ -1150,6 +1211,9 @@ cockpit_web_response_file (CockpitWebResponse *response,
   GMappedFile *file = NULL;
   const gchar *root;
   GBytes *body;
+  GList *output = NULL;
+  GList *l = NULL;
+  gint content_length = -1;
 
   g_return_if_fail (COCKPIT_IS_WEB_RESPONSE (response));
 
@@ -1213,26 +1277,38 @@ again:
     }
 
   body = g_mapped_file_get_bytes (file);
+  if (template_func)
+    {
+      output = cockpit_template_expand (body, template_func, "${", "}", user_data);
+    }
+  else
+    {
+      output = g_list_prepend (output, g_bytes_ref (body));
+      content_length = g_bytes_get_size (body);
+    }
+  g_bytes_unref (body);
 
   /*
    * The default Content-Security-Policy for .html files allows
    * the site to have inline <script> and <style> tags. This code
-   * is not used when serving resources once logged in, only for
-   * static resources when we don't yet have a session.
+   * is only used for static resources that do not use the session.
    */
 
   csp_header = NULL;
   if (g_str_has_suffix (unescaped, ".html"))
     csp_header = "Content-Security-Policy";
 
-  cockpit_web_response_headers (response, 200, "OK", g_bytes_get_size (body),
+  cockpit_web_response_headers (response, 200, "OK", content_length,
                                 csp_header, "default-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:",
                                 NULL);
 
-  if (cockpit_web_response_queue (response, body))
+  for (l = output; l != NULL; l = g_list_next (l))
+    {
+      if (!cockpit_web_response_queue (response, l->data))
+        break;
+    }
+  if (l == NULL)
     cockpit_web_response_complete (response);
-
-  g_bytes_unref (body);
 
 out:
   g_free (unescaped);
@@ -1240,6 +1316,34 @@ out:
   g_free (path);
   if (file)
     g_mapped_file_unref (file);
+
+  if (output)
+    g_list_free_full (output, (GDestroyNotify)g_bytes_unref);
+}
+
+/**
+ * cockpit_web_response_file:
+ * @response: the response
+ * @path: escaped path, or NULL to get from response
+ * @roots: directories to look for file in
+ *
+ * Serve a file from disk as an HTTP response.
+ */
+void
+cockpit_web_response_file (CockpitWebResponse *response,
+                           const gchar *escaped,
+                           const gchar **roots)
+{
+  web_response_file (response, escaped, roots, NULL, NULL);
+}
+
+void
+cockpit_web_response_template (CockpitWebResponse *response,
+                                   const gchar *escaped,
+                                   const gchar **roots,
+                                   GHashTable *values)
+{
+  web_response_file (response, escaped, roots, substitute_hash_value, values);
 }
 
 static gboolean
@@ -1417,28 +1521,6 @@ load_file (const gchar *filename,
   return bytes;
 }
 
-static gchar *
-language_to_locale (const gchar *value) {
-  const gchar *spot = strchr (value, '-');
-  gchar *country = NULL;
-  gchar *lang = NULL;
-  gchar *result = NULL;
-  if (spot)
-    {
-      country = g_ascii_strup (spot + 1, -1);
-      lang = g_ascii_strdown (value, spot - value);
-      result = g_strconcat (lang, "_", country, NULL);
-    }
-  else
-    {
-      result = g_strdup (value);
-    }
-
-  g_free (country);
-  g_free (lang);
-  return result;
-}
-
 /**
  * cockpit_web_response_negotiation:
  * @path: likely filesystem path
@@ -1468,10 +1550,11 @@ cockpit_web_response_negotiation (const gchar *path,
   GBytes *bytes = NULL;
   GError *local_error = NULL;
   gchar *locale = NULL;
+  gchar *shorter = NULL;
   gint i;
 
   if (language)
-      locale = language_to_locale (language);
+      locale = cockpit_locale_from_language (language, NULL, &shorter);
 
   ext = find_extension (path);
   if (ext)
@@ -1486,31 +1569,39 @@ cockpit_web_response_negotiation (const gchar *path,
 
   while (!bytes)
     {
-      if (locale)
+      if (locale && shorter)
         i = 0;
-      else
+      else if (locale)
         i = 2;
-      for (; i < 6; i++)
+      else
+        i = 4;
+      for (; i < 8; i++)
         {
           g_free (name);
           switch (i)
             {
             case 0:
-              name = g_strconcat (base, ".", locale, ext, NULL);
+              name = g_strconcat (base, ".", shorter, ext, NULL);
               break;
             case 1:
-              name = g_strconcat (base, ".", locale, ext, ".gz", NULL);
+              name = g_strconcat (base, ".", shorter, ext, ".gz", NULL);
               break;
             case 2:
-              name = g_strconcat (base, ext, NULL);
+              name = g_strconcat (base, ".", locale, ext, NULL);
               break;
             case 3:
-              name = g_strconcat (base, ".min", ext, NULL);
+              name = g_strconcat (base, ".", locale, ext, ".gz", NULL);
               break;
             case 4:
-              name = g_strconcat (base, ext, ".gz", NULL);
+              name = g_strconcat (base, ext, NULL);
               break;
             case 5:
+              name = g_strconcat (base, ".min", ext, NULL);
+              break;
+            case 6:
+              name = g_strconcat (base, ext, ".gz", NULL);
+              break;
+            case 7:
               name = g_strconcat (base, ".min", ext, ".gz", NULL);
               break;
             default:
@@ -1549,6 +1640,7 @@ out:
   g_free (name);
   g_free (base);
   g_free (locale);
+  g_free (shorter);
   return bytes;
 }
 
@@ -1563,7 +1655,7 @@ cockpit_web_response_content_type (const gchar *path)
     { ".gif", "image/gif" },
     { ".eot", "application/vnd.ms-fontobject" },
     { ".html", "text/html" },
-    { ".ico", "image/vnd.microsoft.icon" },
+    /* { ".ico", "image/vnd.microsoft.icon" }, */
     { ".jpg", "image/jpg" },
     { ".js", "application/javascript" },
     { ".json", "application/json" },

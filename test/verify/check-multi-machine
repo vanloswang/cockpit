@@ -20,9 +20,10 @@
 
 import parent
 from testlib import *
-
+import subprocess
 import socket
 import time
+import re
 
 def break_hostkey(m, address):
     line = "{0} ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJqfgO2FPiix1n2sCJCXbaffwog1Vvi3zRdmcAxG//5T".format(address)
@@ -73,7 +74,7 @@ def add_machine(b, address, known_host=False):
     b.enter_page("/system", host=address)
 
 def kill_user_admin(machine):
-    machine.execute("loginctl kill-user admin")
+    machine.execute("loginctl terminate-user admin")
 
 def change_ssh_port(machine, port=None, timeout_sec=120):
     try:
@@ -198,6 +199,270 @@ class TestMultiMachine(MachineCase):
                 self.check_journal_messages(self.machine3)
         MachineCase.tearDown(self)
 
+    def checkDirectLogin(self, root='/'):
+        b = self.browser
+        m2 = self.machine2
+        m = self.machine
+
+        name = self.machine.execute("hostname")
+
+        # Change os-release pretty name on m2
+        m2.execute("sed -i '/NAME=.*/d' /etc/os-release")
+        m2.execute("echo 'NAME=\"A Pretty Name\"' >> /etc/os-release")
+
+        b.switch_to_top()
+        b.go("{}/system".format(root));
+        b.enter_page("/system")
+        b.wait_in_text('#system_information_hostname_button', name.strip())
+        b.switch_to_top()
+        b.wait_js_cond('window.location.pathname == "{0}system"'.format(root))
+        b.click("a[href='/dashboard']")
+        b.enter_page("/dashboard")
+        b.wait_present("a[data-address='{}']".format(m2.address))
+
+        # Direct to machine2, new login
+        m2.execute("echo admin:alt-password | chpasswd")
+        b.switch_to_top()
+        b.open("{0}={1}".format(root, m2.address))
+        b.wait_visible("#login")
+        b.wait_visible("#server-name")
+        b.wait_not_visible("#badge")
+        b.wait_not_visible("#brand")
+        b.wait_in_text("#server-name", m2.address)
+        b.set_val("#login-user-input", "admin")
+        b.set_val("#login-password-input", "alt-password")
+        b.click('#login-button')
+        b.expect_load()
+        b.enter_page("/system")
+        b.wait_in_text('#system_information_hostname_button', "machine2")
+        b.switch_to_top()
+
+        # Branding uses m2 pretty name
+        b.wait_in_text ("#index-brand", "A Pretty Name")
+        b.wait_js_cond('window.location.pathname == "{0}={1}/system"'.format(root, m2.address))
+
+        b.click("a[href='/dashboard']")
+        b.enter_page("/dashboard")
+        b.wait_present("a[data-address='localhost']")
+        b.wait_in_text("a[data-address='localhost']", m2.address)
+        b.wait_not_present("a[data-address='{}']".format(m2.address))
+        b.logout()
+
+        # Bad host key
+        m.execute("echo '{} ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDgPMmTosSQ4NxMtq+aL2NKLC+W4I9/jbD1e74cnOKTW' > /var/lib/cockpit/known_hosts".format(m2.address))
+        b.open("{0}={1}".format(root, m2.address))
+        b.wait_visible("#login")
+        b.set_val("#login-user-input", "admin")
+        b.set_val("#login-password-input", "alt-password")
+        b.click('#login-button')
+
+        b.wait_not_visible("#conversation-group")
+        b.wait_visible("#password-group")
+        b.wait_visible("#user-group")
+        b.wait_visible("#option-group")
+        b.wait_not_visible("#server-group")
+        b.wait_not_visible("#login-error-host")
+        b.wait_visible("#login-error-message")
+        b.wait_in_text("#login-error-message", "Hostkey does not match")
+
+        # Clear host key.
+        m.execute("echo '' > /var/lib/cockpit/known_hosts")
+        b.set_val("#login-user-input", "admin")
+        b.set_val("#login-password-input", "alt-password")
+        b.click('#login-button')
+
+        b.wait_not_visible("#conversation-group")
+        b.wait_visible("#password-group")
+        b.wait_visible("#user-group")
+        b.wait_visible("#option-group")
+        b.wait_not_visible("#server-group")
+        b.wait_not_visible("#login-error-host")
+        b.wait_visible("#login-error-message")
+        b.wait_in_text("#login-error-message", "Host is unknown")
+
+        m.execute("echo '\n[SSH-Login]\nallowUnknown = true' >> /etc/cockpit/cockpit.conf")
+        m.restart_cockpit()
+        b.open("{0}={1}".format(root, m2.address))
+        b.wait_visible("#login")
+        b.set_val("#login-user-input", "admin")
+        b.set_val("#login-password-input", "alt-password")
+        b.click('#login-button')
+
+        b.wait_visible("#conversation-group")
+        b.wait_not_visible("#password-group")
+        b.wait_not_visible("#user-group")
+        b.wait_not_visible("#option-group")
+        b.wait_not_visible("#server-group")
+        b.wait_in_text("#conversation-prompt", "MD5 Fingerprint")
+        b.wait_in_text("#conversation-message", "Do you want to proceed this time?")
+        b.set_val('#conversation-input', 'foobar')
+        b.click('#login-button')
+
+        b.wait_not_visible("#conversation-group")
+        b.wait_visible("#password-group")
+        b.wait_visible("#user-group")
+        b.wait_visible("#option-group")
+        b.wait_not_visible("#server-group")
+        b.wait_not_visible("#login-error-host")
+        b.wait_visible("#login-error-message")
+        b.wait_in_text("#login-error-message", "Hostkey is unknown")
+
+        b.wait_visible("#login")
+        b.set_val("#login-user-input", "admin")
+        b.set_val("#login-password-input", "alt-password")
+        b.click('#login-button')
+
+        b.wait_visible("#conversation-group")
+        b.wait_not_visible("#password-group")
+        b.wait_not_visible("#user-group")
+        b.wait_not_visible("#option-group")
+        b.wait_not_visible("#server-group")
+        b.wait_in_text("#conversation-prompt", "MD5 Fingerprint")
+        b.wait_in_text("#conversation-message", "Do you want to proceed this time?")
+
+        try:
+            algo = re.sub(r'MD5 Fingerprint \(ssh-(.*)\):', r'\1', b.text("#conversation-prompt"))
+            line = m2.execute("ssh-keygen -l -E md5 -f /etc/ssh/ssh_host_%s_key.pub" % algo, quiet=True)
+            fp = line.split(" ")[1].replace('MD5:', '')
+            self.assertEqual(b.val('#conversation-input'), fp)
+        # ssh-keygen doesn't support -E, just make sure we have a fp
+        except subprocess.CalledProcessError:
+            self.assertTrue(b.val('#conversation-input'))
+
+        b.click('#login-button')
+        b.expect_load()
+        b.enter_page("/system")
+        b.wait_in_text('#system_information_hostname_button', "machine2")
+        b.logout()
+
+        # Check hostkey isn't saved
+        self.assertFalse(m.execute("cat /var/lib/cockpit/known_hosts").strip())
+
+        # Direct to machine2, via form
+        b.open("{0}other".format(root))
+        b.wait_visible("#login")
+        b.wait_visible("#user-group")
+        b.wait_visible("#password-group")
+        b.wait_not_visible("#server-group")
+        b.set_val("#login-user-input", "admin")
+        b.set_val("#login-password-input", "bad-password")
+        b.click('#login-button')
+        b.wait_visible("#login-error-message")
+        b.wait_not_visible("#login-error-host")
+
+        # Connect to bad machine
+        b.set_val("#login-password-input", "bad-password")
+        b.click('#option-group')
+        b.wait_visible("#server-group")
+        b.set_val("#server-field", "bad")
+        b.click('#option-group')
+        b.wait_not_visible("#server-group")
+        b.click('#login-button')
+        b.wait_visible("#server-group")
+        b.wait_visible("#login-error-host")
+        b.wait_in_text("#login-error-host", "Unable to connect")
+        b.wait_not_visible("#login-error-message")
+
+        # Connect to machine2
+        b.set_val("#server-field", m2.address)
+        b.set_val("#login-password-input", "alt-password")
+        b.click('#login-button')
+        b.wait_in_text("#server-name", m2.address)
+        b.wait_visible("#conversation-group")
+        b.wait_not_visible("#password-group")
+        b.wait_not_visible("#user-group")
+        b.wait_not_visible("#option-group")
+        b.wait_not_visible("#server-group")
+        b.wait_in_text("#conversation-prompt", "MD5 Fingerprint")
+        b.wait_in_text("#conversation-message", "Do you want to proceed this time?")
+        b.click('#login-button')
+        b.expect_load()
+        b.enter_page("/system")
+        b.wait_in_text('#system_information_hostname_button', "machine2")
+        b.switch_to_top()
+        b.wait_js_cond('window.location.pathname == "{0}={1}/system"'.format(root, m2.address))
+        b.click("a[href='/dashboard']")
+        b.enter_page("/dashboard")
+        b.wait_present("a[data-address='localhost']")
+        b.wait_in_text("a[data-address='localhost']", m2.address)
+        b.wait_not_present("a[data-address='{}']".format(m2.address))
+
+        # Might happen when we switch away.
+        self.allow_hostkey_messages()
+        self.allow_journal_messages(".*: Connection reset by peer",
+                                    "connection unexpectedly closed by peer")
+
+    def testDirectLogin(self):
+        b = self.browser
+        m2 = self.machine2
+
+        self.login_and_go("/dashboard")
+        add_machine(b, m2.address)
+        self.checkDirectLogin('/');
+
+    def testUrlRoot(self):
+        b = self.browser
+        m = self.machine
+        m2 = self.machine2
+
+        m.execute('mkdir -p /etc/cockpit/ && echo "[WebService]\nUrlRoot = cockpit-new" > /etc/cockpit/cockpit.conf')
+        m.start_cockpit()
+
+        # Make sure normal urls don't work.
+        output = m.execute('curl -s -o /dev/null -w "%{http_code}" http://localhost:9090/cockpit/socket')
+        self.assertIn('404', output)
+
+        output = m.execute('curl -s -o /dev/null -w "%{http_code}" http://localhost:9090/cockpit/socket')
+        self.assertIn('404', output)
+
+        b.open("/cockpit-new/system")
+        b.wait_visible("#login")
+        b.set_val("#login-user-input", "admin")
+        b.set_val("#login-password-input", "foobar")
+        b.click('#login-button')
+        b.expect_load()
+        b.enter_page("/system")
+        b.switch_to_top()
+        b.wait_js_cond('window.location.pathname == "/cockpit-new/system"')
+
+        b.click("a[href='/dashboard']")
+        b.enter_page("/dashboard")
+        b.switch_to_top()
+        b.wait_js_cond('window.location.pathname == "/cockpit-new/dashboard"')
+        b.enter_page("/dashboard")
+        b.wait_present("a[data-address='localhost']")
+        b.click("a[data-address='localhost']")
+        b.enter_page("/system")
+        b.switch_to_top()
+
+        # Test 2nd machine
+        b.click("a[href='/dashboard']")
+        b.enter_page("/dashboard")
+        add_machine(b, m2.address)
+        b.enter_page("/system", host=m2.address)
+        b.wait_text("#system_information_hostname_button", "machine2")
+        b.switch_to_top()
+        b.wait_js_cond('window.location.pathname == "/cockpit-new/@%s/system"' % m2.address)
+
+        # Test subnav
+        b.wait_visible('a[data-target="#tools-panel"]')
+        b.click('a[data-target="#tools-panel"]')
+        b.wait_present('a[href="/@{}/users"]'.format(m2.address))
+        b.wait_visible('a[href="/@{}/users"]'.format(m2.address))
+        b.click('a[href="/@{}/users"]'.format(m2.address))
+        b.enter_page("/users", host=m2.address)
+        b.wait_present("#accounts-list")
+        b.wait_present("#accounts-list div.cockpit-account:first-child")
+        b.click("#accounts-list div.cockpit-account:first-child")
+        b.wait_text("#account-user-name", "admin")
+        b.switch_to_top()
+        b.wait_js_cond('window.location.pathname == "/cockpit-new/@%s/users"' % m2.address)
+        b.wait_js_cond('window.location.hash == "#/admin"')
+
+
+        self.checkDirectLogin('/cockpit-new/');
+        self.allow_hostkey_messages()
+
     def testExternalPage(self):
         b = self.browser
         m1 = self.machine
@@ -205,9 +470,9 @@ class TestMultiMachine(MachineCase):
 
         # Modify the terminals to be different on the two machines.
         m1.needs_writable_usr()
-        m1.execute("gunzip -c /usr/share/cockpit/system/terminal.min.html.gz | sed -e 's|</body>|magic-m1-token</body>|' > /usr/share/cockpit/system/terminal.html")
+        m1.execute("gunzip -c /usr/share/cockpit/systemd/terminal.html.gz | sed -e 's|</body>|magic-m1-token</body>|' > /usr/share/cockpit/systemd/terminal.html")
         m2.needs_writable_usr()
-        m2.execute("gunzip -c /usr/share/cockpit/system/terminal.min.html.gz | sed -e 's|</body>|magic-m2-token</body>|' > /usr/share/cockpit/system/terminal.html")
+        m2.execute("gunzip -c /usr/share/cockpit/systemd/terminal.html.gz | sed -e 's|</body>|magic-m2-token</body>|' > /usr/share/cockpit/systemd/terminal.html")
 
         self.login_and_go("/dashboard")
         add_machine(b, m2.address)
@@ -349,7 +614,6 @@ class TestMultiMachine(MachineCase):
 
         b.eval_js('ph_set_attr("iframe[name=\'%s\']", "data-ready", null)' % frame)
         b.eval_js('ph_set_attr("iframe[name=\'%s\']", "src", "../playground/test.html?i=1#/")' % frame)
-        b.expect_load()
         b.wait_present("iframe.container-frame[name='%s'][data-ready]" % frame)
 
         b.enter_page("/playground/test", m2.address)
@@ -405,7 +669,6 @@ class TestMultiMachine(MachineCase):
             start_machine_troubleshoot(b)
 
         check_failed_state(b, "Cockpit is not installed")
-        b.wait_visible(".curtains-ct div.spinner")
         b.wait_visible("#machine-reconnect")
         fix_bridge(m2)
 
@@ -431,7 +694,6 @@ class TestMultiMachine(MachineCase):
         self.login_and_go(None)
         b.go(machine_path)
 
-        b.wait_visible(".curtains-ct div.spinner")
         with b.wait_timeout(120):
             b.wait_visible("#machine-reconnect")
         start_machine_troubleshoot(b)
@@ -475,7 +737,6 @@ class TestMultiMachine(MachineCase):
         m2.disconnect()
         self.login_and_go(None)
         b.go(machine_path)
-        b.wait_visible(".curtains-ct div.spinner")
         with b.wait_timeout(120):
             b.wait_visible("#machine-reconnect")
         start_machine_troubleshoot(b)

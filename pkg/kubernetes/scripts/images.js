@@ -21,23 +21,20 @@
     "use strict";
 
     var angular = require('angular');
+    require("angular-route");
 
     require('./dialog');
     require('./kube-client');
     require('./date');
     require('./listing');
-    require('./layers');
     require('./tags');
+
+    require('registry-image-widgets/dist/image-widgets.js');
 
     require('../views/images-page.html');
     require('../views/imagestream-page.html');
     require('../views/image-page.html');
     require('../views/image-panel.html');
-    require('../views/image-body.html');
-    require('../views/image-config.html');
-    require('../views/image-meta.html');
-    require('../views/imagestream-body.html');
-    require('../views/imagestream-meta.html');
     require('../views/image-listing.html');
     require('../views/imagestream-delete.html');
     require('../views/imagestream-modify.html');
@@ -64,8 +61,8 @@
         'kubeClient',
         'kubernetes.date',
         'kubernetes.listing',
-        'registry.layers',
         'registry.tags',
+        'registryUI.images',
     ])
 
     .config([
@@ -257,51 +254,6 @@
             };
         }
     ])
-
-    .directive('imageBody',
-        function() {
-            return {
-                restrict: 'A',
-                templateUrl: 'views/image-body.html'
-            };
-        }
-    )
-
-    .directive('imageConfig',
-        function() {
-            return {
-                restrict: 'A',
-                templateUrl: 'views/image-config.html'
-            };
-        }
-    )
-
-    .directive('imageMeta',
-        function() {
-            return {
-                restrict: 'A',
-                templateUrl: 'views/image-meta.html'
-            };
-        }
-    )
-
-    .directive('imagestreamBody',
-        function() {
-            return {
-                restrict: 'A',
-                templateUrl: 'views/imagestream-body.html'
-            };
-        }
-    )
-
-    .directive('imagestreamMeta',
-        function() {
-            return {
-                restrict: 'A',
-                templateUrl: 'views/imagestream-meta.html'
-            };
-        }
-    )
 
     .directive('imageListing',
         function() {
@@ -551,7 +503,8 @@
 
     .factory('imageActions', [
         '$modal',
-        function($modal) {
+        '$location',
+        function($modal, $location) {
             function deleteImageStream(stream) {
                 return $modal.open({
                     animation: false,
@@ -606,11 +559,17 @@
                 return modal.result;
             }
 
+            function modifyProject(project) {
+                $location.path("/projects/" + project);
+                return false;
+            }
+
             return {
                 createImageStream: createImageStream,
                 modifyImageStream: modifyImageStream,
                 deleteImageStream: deleteImageStream,
                 deleteTag: deleteTag,
+                modifyProject: modifyProject,
             };
         }
     ])
@@ -636,10 +595,12 @@
         "imageTagData",
         "kubeMethods",
         "filterService",
-        function($scope, $instance, dialogData, tagData, methods, filter) {
+        "gettextCatalog",
+        function($scope, $instance, dialogData, tagData, methods, filter, gettextCatalog) {
             var stream = dialogData.stream || { };
             var meta = stream.metadata || { };
             var spec = stream.spec || { };
+            var _ = gettextCatalog.getString.bind(gettextCatalog);
 
             var populate = "none";
             if (spec.dockerImageRepository)
@@ -659,15 +620,17 @@
             $scope.fields = fields;
             $scope.labels = {
                 populate: {
-                    none: "Don't pull images automatically",
-                    pull: "Sync all tags from a remote image repository",
-                    tags: "Pull specific tags from another image repository",
+                    none: _("Don't pull images automatically"),
+                    pull: _("Sync all tags from a remote image repository"),
+                    tags: _("Pull specific tags from another image repository"),
                 }
             };
 
+            $scope.placeholder = _("eg: my-image-stream");
+
             /* During creation we have a different label */
             if (!dialogData.stream)
-                $scope.labels.populate.none = "Create empty image stream";
+                $scope.labels.populate.none = _("Create empty image stream");
 
             function performModify() {
                 var data = { spec: { dockerImageRepository: null, tags: null } };

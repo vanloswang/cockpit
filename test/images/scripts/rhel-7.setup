@@ -49,7 +49,6 @@ if [ ! -f "$SKIP_REPO_FLAG" ]; then
     yum-config-manager --enable rhel-7-server-extras-rpms
 
     # the following don't necessarily need to work
-    yum-config-manager --enable rhel-7-server-beta-rpms || true
     yum-config-manager --disable rhel-sjis-for-rhel-7-server-rpms || true
     yum-config-manager --disable rhel-7-server-htb-rpms || true
 fi
@@ -62,6 +61,7 @@ echo foobar | passwd --stdin root
 # them to not spontaneously change from one test run to the next when
 # the distribution repository is updated.
 COCKPIT_DEPS="\
+atomic \
 device-mapper-multipath \
 docker \
 etcd \
@@ -69,17 +69,20 @@ glib-networking \
 json-glib \
 kubernetes \
 libssh \
+libvirt \
+libvirt-client \
 NetworkManager-team \
 pcp-libs \
 pcp \
 python-pip \
+qemu \
 realmd \
 selinux-policy-targeted \
+setroubleshoot-server \
 subscription-manager \
 storaged \
 storaged-lvm2 \
 storaged-iscsi \
-atomic \
 sos \
 tuned \
 "
@@ -99,18 +102,10 @@ systemtap-runtime-virtguest \
 valgrind \
 gdb \
 yum-utils \
+virt-install \
+qemu-system-x86 \
+qemu-kvm \
 "
-
-# enable epel for mock and avocado
-if [ ! -f "$SKIP_REPO_FLAG" ]; then
-    mkdir /tmp/dep
-    cd /tmp/dep
-    yum -y install wget
-    wget -T 15 -t 4 http://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
-    rpm -Uvh epel-release-*.rpm
-    cd
-    rm -rf /tmp/dep
-fi
 
 yum install --nogpgcheck -y $TEST_PACKAGES $COCKPIT_DEPS $IPA_CLIENT_PACKAGES
 
@@ -121,11 +116,30 @@ debuginfo-install -y storaged storaged-lvm2 storaged-iscsi
 
 # only install mock and build if TEST_SOURCE is set
 if [ -n "$TEST_SOURCE" ]; then
-    yum -y install mock rpm-build
+    yum -y install rpm-build
+
+    # enable epel for mock
+    if [ ! -f "$SKIP_REPO_FLAG" ]; then
+        mkdir /tmp/dep
+        cd /tmp/dep
+        yum -y install wget
+        wget -T 15 -t 4 http://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+        yum -y remove wget
+        rpm -Uvh epel-release-*.rpm
+        cd
+        rm -rf /tmp/dep
+    fi
+    yum -y install mock
+
+    # disable epel again
+    yum-config-manager --disable 'epel*'
+
     useradd -c Builder -G mock builder
     srpm=$(/var/lib/testvm/make-srpm $TEST_SOURCE)
     su builder -c "/usr/bin/mock --verbose --installdeps $srpm"
 fi
+
+yum clean all || true
 
 if [ ! -f "$SKIP_REPO_FLAG" ]; then
     subscription-manager unregister
@@ -160,7 +174,6 @@ if type "docker" >/dev/null 2>&1; then
     /var/lib/testvm/docker-images.setup
 fi
 
-yum clean all
 /var/lib/testvm/zero-disk.setup --keep-mock-cache
 
 # HACK - kdump.service interferes with our storage tests, by loading

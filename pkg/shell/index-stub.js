@@ -17,21 +17,19 @@
  * along with Cockpit; If not, see <http://www.gnu.org/licenses/>.
  */
 
-define([
-    "jquery",
-    "base1/cockpit",
-    "shell/indexes",
-    "shell/machines",
-    "shell/po",
-    "shell/machine-dialogs",
-    "manifests",
-], function($, cockpit, indexes, machis, po, mdialogs, manifests) {
+(function() {
     "use strict";
 
-    cockpit.locale(po);
+    var $ = require("jquery");
+    var cockpit = require("cockpit");
+
+    var machis = require("machines");
+    var mdialogs = require("machine-dialogs");
+
+    var indexes = require("./indexes");
 
     var default_title = "Cockpit";
-    var manifest = manifests["shell"] || { };
+    var manifest = cockpit.manifests["shell"] || { };
     if (manifest.title)
         default_title = manifest.title;
 
@@ -62,9 +60,9 @@ define([
 
     indexes.machines_index(options, machines, loader, dialogs);
 
-    var login_data = window.localStorage.getItem('login-data');
+    var login_data = cockpit.localStorage.getItem('login-data', true);
     if (login_data) {
         var data = JSON.parse(login_data);
         $("#content-user-name").text(data["displayName"]);
     }
-});
+}());

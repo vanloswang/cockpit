@@ -17,14 +17,18 @@
  * along with Cockpit; If not, see <http://www.gnu.org/licenses/>.
  */
 
-define([
-    "jquery",
-    "base1/cockpit",
-    "./mustache",
-    "./docker",
-    "./bar",
-    "./patterns",
-], function($, cockpit, Mustache, docker, bar) {
+(function() {
+    "use strict";
+
+    var $ = require("jquery");
+    var cockpit = require("cockpit");
+
+    var Mustache = require("mustache");
+    require("patterns");
+
+    var docker = require("./docker");
+    var bar = require("./bar");
+
     var _ = cockpit.gettext;
     var C_ = cockpit.gettext;
 
@@ -58,6 +62,24 @@ define([
             return util.quote_cmdline ((container.Config.Entrypoint || []).concat(container.Config.Cmd || []));
         else
             return container.Command;
+    };
+
+    /*
+     * Recent versions of docker have a 'Status' field in the state,
+     * but earlier versions have distinct fields which we need to combine.
+     */
+    util.render_container_status = function render_container_status(state) {
+        if (state.Status)
+            return state.Status;
+        if (state.Running)
+            return "running";
+        if (state.Paused)
+            return "paused";
+        if (state.Restarting)
+            return "restarting";
+        if (state.FinishedAt && state.FinishedAt.indexOf("0001") === 0)
+            return "created";
+        return "exited";
     };
 
     util.render_container_name = function render_container_name (name) {
@@ -118,6 +140,9 @@ define([
     };
 
     util.format_memory_and_limit = function format_memory_and_limit(usage, limit) {
+        if (usage === undefined || isNaN(usage))
+            return "";
+
         var mtext = "";
         var units = 1024;
         var parts;
@@ -562,6 +587,5 @@ define([
         return deferred.promise();
     };
 
-    return util;
-
-});
+    module.exports = util;
+}());

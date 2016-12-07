@@ -25,20 +25,21 @@ import parent
 from testlib import *
 from storagelib import *
 
-@unittest.skipIf("debian" in os.environ.get("TEST_OS", ""), "No multipath on Debian (yet).")
+@skipImage("UDisks doesn't have support for multipath", "debian-8", "ubuntu-1604")
+@skipImage("No multipath on Debian", "debian-unstable")
 class TestStorage(StorageCase):
     def testBasic(self):
         m = self.machine
         b = self.browser
 
         def detail_row(index):
-            return '#detail tr:nth-child(%s)' % index
+            return '#detail-header tr:nth-child(%s)' % index
 
         def detail_row_name(index):
-            return '#detail tr:nth-child(%s) td:nth-child(1)' % index
+            return '#detail-header tr:nth-child(%s) td:nth-child(1)' % index
 
         def detail_row_value(index):
-            return '#detail tr:nth-child(%s) td:nth-child(2)' % index
+            return '#detail-header tr:nth-child(%s) td:nth-child(2)' % index
 
         def wait_detail_row(index, name):
             b.wait_present(detail_row(index))

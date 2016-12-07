@@ -17,16 +17,14 @@
  * along with Cockpit; If not, see <http://www.gnu.org/licenses/>.
  */
 
-define([
-    "jquery",
-    "base1/cockpit",
-    "shell/po",
-    "./mustache",
-    "./journal"
-], function($, cockpit, po, Mustache, journal) {
+var $ = require("jquery");
+$(function() {
     "use strict";
 
-    cockpit.locale(po);
+    var cockpit = require("cockpit");
+
+    var journal = require("journal");
+
     cockpit.translate();
     var _ = cockpit.gettext;
 
@@ -334,5 +332,5 @@ define([
         cockpit.location.go('/');
     });
 
-    $(update);
+    update();
 });

@@ -26,6 +26,8 @@
 
 G_BEGIN_DECLS
 
+#define COCKPIT_RESOURCE_PACKAGE_VALID "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+
 #define COCKPIT_TYPE_WEB_RESPONSE         (cockpit_web_response_get_type ())
 #define COCKPIT_WEB_RESPONSE(o)           (G_TYPE_CHECK_INSTANCE_CAST ((o), COCKPIT_TYPE_WEB_RESPONSE, CockpitWebResponse))
 #define COCKPIT_IS_WEB_RESPONSE(o) (G_TYPE_CHECK_INSTANCE_TYPE ((o), COCKPIT_TYPE_WEB_RESPONSE))
@@ -53,6 +55,7 @@ extern const gchar *  cockpit_web_failure_resource;
 GType                 cockpit_web_response_get_type      (void) G_GNUC_CONST;
 
 CockpitWebResponse *  cockpit_web_response_new           (GIOStream *io,
+                                                          const gchar *original_path,
                                                           const gchar *path,
                                                           const gchar *query,
                                                           GHashTable *in_headers);
@@ -106,6 +109,8 @@ void                  cockpit_web_response_gerror        (CockpitWebResponse *se
                                                           GHashTable *headers,
                                                           GError *error);
 
+gchar **              cockpit_web_response_resolve_roots (const gchar **roots);
+
 void                  cockpit_web_response_file          (CockpitWebResponse *response,
                                                           const gchar *escaped,
                                                           const gchar **roots);
@@ -130,6 +135,13 @@ gboolean     cockpit_web_response_is_header_value        (const gchar *string);
 
 void         cockpit_web_response_set_cache_type         (CockpitWebResponse *self,
                                                           CockpitCacheType cache_type);
+
+const gchar *  cockpit_web_response_get_url_root         (CockpitWebResponse *response);
+
+void           cockpit_web_response_template             (CockpitWebResponse *response,
+                                                          const gchar *escaped,
+                                                          const gchar **roots,
+                                                          GHashTable *values);
 
 G_END_DECLS
 

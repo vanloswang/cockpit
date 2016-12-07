@@ -19,6 +19,9 @@
 
 #include "config.h"
 
+#include <sys/types.h>
+#include <sys/socket.h>
+
 #include <err.h>
 #include <errno.h>
 #include <stdlib.h>
@@ -32,11 +35,12 @@
 static char *
 read_seqpacket_message (int fd)
 {
-  char *buf = NULL;
+  struct iovec vec = { .iov_len = MAX_PACKET_SIZE, };
+  struct msghdr msg;
   int r;
 
-  buf = realloc (buf, MAX_AUTH_BUFFER + 1);
-  if (!buf)
+  vec.iov_base = malloc (vec.iov_len + 1);
+  if (!vec.iov_base)
     errx (EX, "couldn't allocate memory for data");
 
   /* Assume only one successful read needed
@@ -44,13 +48,16 @@ read_seqpacket_message (int fd)
    */
   for (;;)
     {
-      r = read (fd, buf, MAX_AUTH_BUFFER);
+      memset (&msg, 0, sizeof (msg));
+      msg.msg_iov = &vec;
+      msg.msg_iovlen = 1;
+      r = recvmsg (fd, &msg, 0);
       if (r < 0)
         {
           if (errno == EAGAIN)
             continue;
 
-          err (EX, "couldn't read data");
+          err (EX, "couldn't recv data");
         }
       else
         {
@@ -58,17 +65,8 @@ read_seqpacket_message (int fd)
         }
     }
 
-  if (r == 0) {
-    free (buf);
-    return NULL;
-  }
-
-  buf = realloc (buf, r + 1);
-  if (!buf)
-    errx (EX, "couldn't reallocate memory for data");
-
-  buf[r] = '\0';
-  return buf;
+  ((char *)vec.iov_base)[r] = '\0';
+  return vec.iov_base;
 }
 
 static void
@@ -78,13 +76,13 @@ write_resp (int fd,
   int r;
   for (;;)
     {
-      r = write (fd, data, strlen (data));
+      r = send (fd, data, strlen (data), 0);
       if (r < 0)
         {
           if (errno == EAGAIN)
             continue;
 
-          err (EX, "couldn't write auth data");
+          err (EX, "couldn't send auth data");
         }
       else
         {
@@ -98,99 +96,161 @@ main (int argc,
       char **argv)
 {
   int success = 0;
+  int fd = AUTH_FD;
   char *data = NULL;
+  char *type = getenv ("COCKPIT_AUTH_MESSAGE_TYPE");
 
-  data = read_seqpacket_message (AUTH_FD);
+  if (type && strcmp (type, "testscheme-fd-4") == 0)
+    fd = 4;
+
+  data = read_seqpacket_message (fd);
   if (strcmp (data, "failslow") == 0)
     {
       sleep (2);
-      write_resp (AUTH_FD, "{ \"error\": \"authentication-failed\" }");
+      write_resp (fd, "{ \"error\": \"authentication-failed\" }");
     }
   else if (strcmp (data, "fail") == 0)
     {
-      write_resp (AUTH_FD, "{ \"error\": \"authentication-failed\" }");
+      write_resp (fd, "{ \"error\": \"authentication-failed\" }");
+    }
+  else if (strcmp (data, "not-supported") == 0)
+    {
+      write_resp (fd, "{ \"error\": \"authentication-failed\", \"auth-method-results\": { } }");
+    }
+  else if (strcmp (data, "ssh-fail") == 0)
+    {
+      write_resp (fd, "{ \"error\": \"authentication-failed\", \"auth-method-results\": { \"password\": \"denied\"} }");
     }
   else if (strcmp (data, "denied") == 0)
     {
-      write_resp (AUTH_FD, "{ \"error\": \"permission-denied\" }");
+      write_resp (fd, "{ \"error\": \"permission-denied\" }");
     }
   else if (strcmp (data, "success") == 0)
     {
-      write_resp (AUTH_FD, "{\"user\": \"me\" }");
+      write_resp (fd, "{\"user\": \"me\" }");
       success = 1;
+    }
+  else if (strcmp (data, "ssh-remote-switch") == 0 &&
+           strcmp (argv[1], "machine") == 0 &&
+           strcmp (getenv ("COCKPIT_SSH_KNOWN_HOSTS_DATA"), "") == 0)
+    {
+      write_resp (fd, "{\"user\": \"me\" }");
+      success = 1;
+    }
+  else if (strcmp (data, "ssh-alt-machine") == 0 &&
+           strcmp (argv[1], "machine") == 0 &&
+           strcmp (getenv ("COCKPIT_SSH_KNOWN_HOSTS_DATA"), "") == 0)
+    {
+      write_resp (fd, "{\"user\": \"me\" }");
+      success = 1;
+    }
+  else if (strcmp (data, "ssh-alt-default") == 0 &&
+           strcmp (argv[1], "default-host") == 0 &&
+           strcmp (getenv ("COCKPIT_SSH_KNOWN_HOSTS_DATA"), "*") == 0)
+    {
+      write_resp (fd, "{\"user\": \"me\" }");
+      success = 1;
+    }
+  else if (type && strcmp (type, "basic") == 0 &&
+           strcmp (argv[1], "127.0.0.1") == 0 &&
+           strcmp (getenv ("COCKPIT_SSH_KNOWN_HOSTS_DATA"), "*") == 0)
+    {
+      if (strcmp (data, "me:this is the password") == 0)
+        {
+          write_resp (fd, "{\"user\": \"me\" }");
+          success = 1;
+        }
+      else
+        {
+          write_resp (fd, "{ \"error\": \"authentication-failed\", \"auth-method-results\": { \"password\": \"denied\"} }");
+        }
+    }
+  else if (type && strcmp (type, "basic") == 0 &&
+           strcmp (argv[1], "machine") == 0 &&
+           strcmp (getenv ("COCKPIT_SSH_KNOWN_HOSTS_DATA"), "") == 0)
+    {
+      if (strcmp (data, "remote-user:this is the machine password") == 0)
+        {
+          write_resp (fd, "{\"user\": \"remote-user\" }");
+          success = 1;
+        }
+      else
+        {
+          write_resp (fd, "{ \"error\": \"authentication-failed\", \"auth-method-results\": { \"password\": \"denied\"} }");
+        }
     }
   else if (strcmp (data, "success-with-data") == 0)
     {
-      write_resp (AUTH_FD, "{\"user\": \"me\", \"login-data\": { \"login\": \"data\"} }");
+      write_resp (fd, "{\"user\": \"me\", \"login-data\": { \"login\": \"data\"} }");
       success = 1;
     }
   else if (strcmp (data, "two-step") == 0)
     {
       free(data);
-      write_resp (AUTH_FD, "{\"prompt\": \"type two\" }");
-      data = read_seqpacket_message (AUTH_FD);
+      write_resp (fd, "{\"prompt\": \"type two\" }");
+      data = read_seqpacket_message (fd);
       if (!data || strcmp (data, "two") != 0)
         {
-          write_resp (AUTH_FD, "{ \"error\": \"authentication-failed\" }");
+          write_resp (fd, "{ \"error\": \"authentication-failed\" }");
         }
       else
         {
-          write_resp (AUTH_FD, "{\"user\": \"me\" }");
+          write_resp (fd, "{\"user\": \"me\" }");
           success = 1;
         }
     }
   else if (strcmp (data, "three-step") == 0)
     {
       free(data);
-      write_resp (AUTH_FD, "{\"prompt\": \"type two\" }");
-      data = read_seqpacket_message (AUTH_FD);
+      write_resp (fd, "{\"prompt\": \"type two\" }");
+      data = read_seqpacket_message (fd);
       if (!data || strcmp (data, "two") != 0)
         {
-          write_resp (AUTH_FD, "{ \"error\": \"authentication-failed\" }");
+          write_resp (fd, "{ \"error\": \"authentication-failed\" }");
           goto out;
         }
 
-      write_resp (AUTH_FD, "{\"prompt\": \"type three\" }");
+      write_resp (fd, "{\"prompt\": \"type three\" }");
       free(data);
-      data = read_seqpacket_message (AUTH_FD);
+      data = read_seqpacket_message (fd);
       if (!data || strcmp (data, "three") != 0)
         {
-          write_resp (AUTH_FD, "{ \"error\": \"authentication-failed\" }");
+          write_resp (fd, "{ \"error\": \"authentication-failed\" }");
         }
       else
         {
-          write_resp (AUTH_FD, "{\"user\": \"me\" }");
+          write_resp (fd, "{\"user\": \"me\" }");
           success = 1;
         }
       success = 1;
     }
   else if (strcmp (data, "success-bad-data") == 0)
     {
-      write_resp (AUTH_FD, "{\"user\": \"me\", \"login-data\": \"bad\" }");
+      write_resp (fd, "{\"user\": \"me\", \"login-data\": \"bad\" }");
       success = 1;
     }
   else if (strcmp (data, "no-user") == 0)
     {
-      write_resp (AUTH_FD, "{ }");
+      write_resp (fd, "{ }");
     }
   else if (strcmp (data, "with-error") == 0)
     {
-      write_resp (AUTH_FD, "{ \"error\": \"unknown\", \"message\": \"detail for error\" }");
+      write_resp (fd, "{ \"error\": \"unknown\", \"message\": \"detail for error\" }");
     }
   else if (strcmp (data, "with-error") == 0)
     {
-      write_resp (AUTH_FD, "{ \"error\": \"unknown\", \"message\": \"detail for error\" }");
+      write_resp (fd, "{ \"error\": \"unknown\", \"message\": \"detail for error\" }");
     }
   else if (strcmp (data, "too-slow") == 0)
     {
       sleep (10);
-      write_resp (AUTH_FD, "{\"user\": \"me\", \"login-data\": { \"login\": \"data\"} }");
+      write_resp (fd, "{\"user\": \"me\", \"login-data\": { \"login\": \"data\"} }");
       success = 1;
     }
 
 out:
-  close(AUTH_FD);
-
+  close(fd);
   if (success)
     execlp ("cat", "cat", NULL);
+
 }

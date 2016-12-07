@@ -17,12 +17,16 @@
  * along with Cockpit; If not, see <http://www.gnu.org/licenses/>.
  */
 
-define([
-    "jquery",
-    "base1/cockpit",
-    "./mustache",
-    "storage/utils"
-], function($, cockpit, mustache, utils) {
+(function() {
+    "use strict";
+
+    var $ = require("jquery");
+    var cockpit = require("cockpit");
+
+    var mustache = require("mustache");
+
+    var utils = require("./utils");
+
     var _ = cockpit.gettext;
     var C_ = cockpit.gettext;
 
@@ -103,6 +107,14 @@ define([
         var jobs_tmpl;
 
         function render_jobs_panel() {
+
+            /* Human readable descriptions of the symbolic "Operation"
+             * property of job objects.  These are from the storaged
+             * documentation at
+             *
+             *   http://storaged.org/doc/udisks2-api/gdbus-org.freedesktop.UDisks2.Job.html
+             */
+
             var descriptions = {
                 'ata-smart-selftest':          _("SMART self-test of $target"),
                 'drive-eject':                 _("Ejecting $target"),
@@ -128,6 +140,9 @@ define([
                 'md-raid-fault-device':        _("Marking $target as faulty"),
                 'md-raid-remove-device':       _("Removing $target from RAID Device"),
                 'md-raid-create':              _("Creating RAID Device $target"),
+                'mdraid-check-job':            _("Checking RAID Device $target"),
+                'mdraid-repair-job':           _("Checking and Repairing RAID Device $target"),
+                'mdraid-recover-job':          _("Recovering RAID Device $target"),
                 'mdraid-sync-job':             _("Synchronizing RAID Device $target"),
                 'lvm-lvol-delete':             _("Deleting $target"),
                 'lvm-lvol-activate':           _("Activating $target"),
@@ -180,7 +195,13 @@ define([
                 var j = job(path);
 
                 var age_ms = server_now - j.StartTime/1000;
-                return age_ms >= 2000;
+                if (age_ms >= 2000)
+                    return true;
+
+                if (j.ExpectedEndTime > 0 && (j.ExpectedEndTime/1000 - server_now) >= 2000)
+                    return true;
+
+                return false;
             }
 
             function make_job(path) {
@@ -220,8 +241,8 @@ define([
 
     }
 
-    return {
+    module.exports = {
         init: init_jobs
     };
 
-});
+}());

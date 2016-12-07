@@ -41,7 +41,9 @@ Depends: ${misc:Depends},
          cockpit-ws,
          cockpit-shell,
          xdg-utils
-Recommends: cockpit-docker
+Recommends: cockpit-docker,
+            cockpit-storaged,
+            cockpit-networkmanager
 Suggests: cockpit-doc,
           cockpit-pcp
 Description: User interface for Linux servers
@@ -66,6 +68,16 @@ Description: Cockpit bridge server-side component
  The Cockpit bridge component installed server side and runs commands on
  the system on behalf of the web based user interface.
 
+Package: cockpit-networkmanager
+Architecture: any
+# Lock bridge dependency due to --with-networkmanager-needs-root
+# which uses new less stable /manifests.js request path.
+depends: ${misc:Depends},
+         cockpit-bridge (= ${binary:Version}),
+         network-manager
+Description: Cockpit user interface for networking
+ The Cockpit components for interacting with networking configuration.
+
 Package: cockpit-pcp
 Architecture: any
 Depends: ${misc:Depends},
@@ -74,6 +86,13 @@ Depends: ${misc:Depends},
          pcp
 Description: Cockpit PCP integration
  Cockpit support for reading PCP metrics and loading PCP archives.
+
+Package: cockpit-storaged
+Architecture: any
+Depends: ${misc:Depends},
+         udisks2 | storaged
+Description: Cockpit user interface for storage
+ The Cockpit components for interacting with storage.
 
 Package: cockpit-ws
 Architecture: any
@@ -100,7 +119,13 @@ Depends: ${misc:Depends},
          python
 Description: Cockpit user interface for Docker containers
  The Cockpit components for interacting with Docker and user interface.
- This package is not yet complete.
+
+Package: cockpit-machines
+Architecture: any
+Depends: ${misc:Depends},
+         libvirt-daemon-system
+Description: Cockpit user interface for virtual machines
+ The Cockpit components for managing virtual machines.
 
 Package: cockpit-test-assets
 Architecture: any

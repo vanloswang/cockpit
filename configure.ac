@@ -21,6 +21,17 @@ AC_INIT([Cockpit],
         [cockpit],
         [http://www.cockpit-project.org/])
 
+# The above git-version-gen command can either use .git or a .tarball file
+# in the top level directory to determine the version. If that didn't work
+# bail early. Cockpit needs to know its own version number
+AC_MSG_CHECKING(that PACKAGE_VERSION is properly set)
+if test -z "$PACKAGE_VERSION"; then
+  AC_MSG_RESULT(no)
+  AC_MSG_ERROR(Please build from a .git checkout or .tar.xz tarball)
+else
+  AC_MSG_RESULT(yes)
+fi
+
 AC_CONFIG_SRCDIR([src])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_AUX_DIR([tools])
@@ -55,7 +66,7 @@ LIBSSH_VERSION="0.6.0"
 
 GIO_REQUIREMENT="gio-unix-2.0 >= $GLIB_VERSION"
 LIBSYSTEMD_REQUIREMENT="libsystemd"
-LIBSYSTEMD_REQUIREMENT_OLD="libsystemd-journal >= 187 libsystemd-daemon"
+LIBSYSTEMD_REQUIREMENT_OLD="libsystemd-journal >= 187 libsystemd-daemon libsystemd-login"
 JSON_GLIB_REQUIREMENT="json-glib-1.0 >= 0.14.0"
 POLKIT_REQUIREMENT="polkit-agent-1 >= 0.105"
 
@@ -115,10 +126,14 @@ if test "$enable_ws" != "no"; then
   AC_MSG_RESULT([$enable_ws])
   PKG_CHECK_MODULES(GLIB_TLS, [glib-2.0 >= 2.37.4])
   PKG_CHECK_MODULES(LIBSSH, [libssh >= $LIBSSH_VERSION libssh_threads])
-  COCKPIT_WS_CFLAGS="$COCKPIT_CFLAGS $LIBSSH_CFLAGS $KRB5_CFLAGS"
-  COCKPIT_WS_LIBS="$COCKPIT_LIBS $LIBSSH_LIBS $KRB5_LIBS"
+  COCKPIT_WS_CFLAGS="$COCKPIT_CFLAGS $KRB5_CFLAGS"
+  COCKPIT_WS_LIBS="$COCKPIT_LIBS $KRB5_LIBS"
+  COCKPIT_SSH_SESSION_CFLAGS="$COCKPIT_CFLAGS $LIBSSH_CFLAGS $KRB5_CFLAGS"
+  COCKPIT_SSH_SESSION_LIBS="$COCKPIT_LIBS $LIBSSH_LIBS $KRB5_LIBS"
   AC_SUBST(COCKPIT_WS_CFLAGS)
   AC_SUBST(COCKPIT_WS_LIBS)
+  AC_SUBST(COCKPIT_SSH_SESSION_LIBS)
+  AC_SUBST(COCKPIT_SSH_SESSION_CFLAGS)
 else
   enable_ws="no"
   AC_MSG_RESULT([$enable_ws])
@@ -235,12 +250,40 @@ AC_SUBST([systemdunitdir], [$systemdunitdir])
 
 # Internationalization
 
-IT_PROG_INTLTOOL([$INTLTOOL_REQUIRED])
-
 GETTEXT_PACKAGE=cockpit
 AC_SUBST([GETTEXT_PACKAGE])
 AM_GLIB_GNU_GETTEXT
 AC_DEFINE_UNQUOTED([GETTEXT_PACKAGE],["$GETTEXT_PACKAGE"],[gettext domain])
+
+AC_PATH_PROG(MSGCAT, msgcat)
+AC_PATH_PROG(MSGFMT, msgfmt)
+AC_PATH_PROG(MSGGREP, msggrep)
+AC_PATH_PROG(MSGMERGE, msgmerge)
+AC_PATH_PROG(XGETTEXT, xgettext)
+AC_MSG_CHECKING(for gettext binaries)
+if test -x "$MSGCAT" -a -x "$MSGFMT" -a -x "$MSGMERGE" -a -x "$MSGGREP" -a -x "$XGETTEXT"; then
+  AC_SUBST(MSGCAT)
+  AC_SUBST(MSGFMT)
+  AC_SUBST(MSGGREP)
+  AC_SUBST(MSGMERGE)
+  AC_SUBST(XGETTEXT)
+  AC_MSG_RESULT(yes)
+else
+  AC_MSG_ERROR([no. Please install gettext tools])
+fi
+
+AC_PATH_PROG(INTLTOOL_EXTRACT, intltool-extract)
+AC_PATH_PROG(INTLTOOL_MERGE, intltool-merge)
+AC_PATH_PROG(INTLTOOL_UPDATE, intltool-update)
+AC_MSG_CHECKING(for intltool binaries)
+if test -x "$INTLTOOL_EXTRACT" -a -x "$INTLTOOL_MERGE" -a -x "$INTLTOOL_UPDATE"; then
+  AC_SUBST(INTLTOOL_EXTRACT)
+  AC_SUBST(INTLTOOL_MERGE)
+  AC_SUBST(INTLTOOL_UPDATE)
+  AC_MSG_RESULT(yes)
+else
+  AC_MSG_ERROR(no. Please install intltool package)
+fi
 
 # phantomjs
 
@@ -310,7 +353,8 @@ changequote([,])dnl
 
 AC_CHECK_FUNCS(fdwalk)
 
-# Storaged
+
+# Package specific settings
 
 # HACK - Storaged before 2.5.3 doesn't tell us when it supports
 #        sessions, so we allow it to be switched off explicitly.
@@ -323,6 +367,19 @@ AC_ARG_WITH(storaged-iscsi-sessions,
             [],
             [with_storaged_iscsi_sessions=yes])
 AC_SUBST(with_storaged_iscsi_sessions)
+
+# HACK - Debian has a broken policy for NetworkManager where it
+#        only allows local sessions or root to perform actions.
+#
+# https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=808162
+
+AC_ARG_WITH(networkmanager-needs-root,
+	    AC_HELP_STRING([--with-networkmanager-needs-root=yes/no],
+			   [Whether NetworkManager requires root access]),
+            [],
+	    [with_networkmanager_needs_root=yes])
+AC_SUBST(with_networkmanager_needs_root)
+
 
 # Address sanitizer
 
@@ -416,10 +473,10 @@ AM_CONDITIONAL([ENABLE_DOC], [test "$enable_doc" = "yes"])
 
 AC_MSG_CHECKING([for branding directory])
 AC_ARG_WITH(branding,
-            AC_HELP_STRING([--with-branding=default],
-                           [Specify which branding to use.  A value of "auto" means to detect it at run-time.])
+            AC_HELP_STRING([--with-branding=auto],
+                           [Specify which branding to use.  A value of "default" means upstream branding.])
 )
-BRAND=${with_branding:-default}
+BRAND=${with_branding:-auto}
 AC_MSG_RESULT($BRAND)
 if test "$BRAND" != "auto"; then
   AC_DEFINE_UNQUOTED([PACKAGE_BRAND], ["$BRAND"], [Which brand to show.])
@@ -443,6 +500,7 @@ if test "$enable_debug" = "yes"; then
   debug_status="yes"
   debugdir=
   CFLAGS="$CFLAGS -O0"
+  NODE_ENV="development"
 elif test "$enable_debug" = "no"; then
   debug_status="no"
   CFLAGS="$CFLAGS -O2"
@@ -496,16 +554,13 @@ AC_MSG_RESULT($enable_strict)
 AC_SUBST(REAUTHORIZE_LIBS)
 AC_SUBST(PAM_LIBS)
 
-# So that we can enforce this include to be evaluated at make runtime
-AC_SUBST([INCLUDE_WEBPACK_DEPS], ["-include Makefile-webpack.deps"])
-
-AC_DEFINE([MAX_AUTH_BUFFER], [65536], [Maximum size of auth message])
+AC_DEFINE([MAX_PACKET_SIZE], [65536], [Maximum size of packet messages])
 
 AC_OUTPUT([
 Makefile
+pkg/networkmanager/override.json
 pkg/storaged/override.json
 doc/guide/version
-po/Makefile.in
 ])
 
 

@@ -1,13 +1,12 @@
-define([
-    "base1/cockpit",
-    "./react",
-    "./cockpit-components-terminal",
-    "shell/po",
-], function(cockpit, React, componentsTerminal, po) {
-
+(function() {
     "use strict";
 
-    cockpit.locale(po);
+    var cockpit = require("cockpit");
+    var _ = cockpit.gettext;
+
+    var React = require("react");
+    var componentsTerminal = require("cockpit-components-terminal.jsx");
+
     cockpit.translate();
 
     /*
@@ -78,7 +77,7 @@ define([
                         <tt className="terminal-title">{this.state.title}</tt>
                         <button ref="resetButton"
                                 className="btn btn-default pull-right"
-                                onClick={this.onResetClick}>Reset</button>
+                                onClick={this.onResetClick}>{_("Reset")}</button>
                     </div>
                     {terminal}
                 </div>
@@ -90,4 +89,4 @@ define([
 
     /* And show the body */
     document.body.removeAttribute("hidden");
-});
+}());

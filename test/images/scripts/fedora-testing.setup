@@ -24,9 +24,12 @@ glib-networking \
 json-glib \
 kubernetes \
 libssh \
+libvirt \
+libvirt-client \
 NetworkManager-team \
 pcp \
 pcp-libs \
+qemu \
 realmd \
 selinux-policy-targeted \
 setroubleshoot-server \
@@ -36,6 +39,7 @@ storaged-lvm2 \
 storaged-iscsi \
 subscription-manager \
 tuned \
+virt-install \
 "
 
 # We also install the packages necessary to join a FreeIPA domain so
@@ -102,10 +106,6 @@ docker build -t cockpit/base /var/tmp/cockpit-base
 # reduce image size
 dnf clean all
 /var/lib/testvm/zero-disk.setup
-
-# Final tweaks
-echo "kernel.core_pattern=|/usr/lib/systemd/systemd-coredump %p %u %g %s %t %e" > /etc/sysctl.d/50-coredump.conf
-printf "[Coredump]\nStorage=journal\n" > /etc/systemd/coredump.conf
 
 ln -sf ../selinux/config /etc/sysconfig/selinux
 printf "SELINUX=enforcing\nSELINUXTYPE=targeted\n" > /etc/selinux/config

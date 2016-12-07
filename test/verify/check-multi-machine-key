@@ -31,7 +31,7 @@ import re
 def kill_user_admin(machine):
     # logind from systemd 208 is buggy, so we use systemd directly if it fails
     # https://bugs.freedesktop.org/show_bug.cgi?id=71092
-    machine.execute("loginctl kill-user admin || systemctl kill user-1000.slice")
+    machine.execute("loginctl terminate-user admin || systemctl kill user-1000.slice")
 
 def authorize_user(m, user):
     m.execute("mkdir -p /home/{0}/.ssh".format(user))
@@ -59,8 +59,8 @@ KEY_IDS_MD5 = [
     "256 b5:80:1b:f5:98:89:2a:39:f3:78:b3:64:5c:64:33:17 /home/admin/.ssh/id_ed25519 (ED25519)"
 ]
 
-# https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=805030
-@unittest.skipIf("debian" in os.environ.get("TEST_OS", ""), "No ssh keys on Debian (yet).")
+# HACK: https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=805030
+@skipImage("libssh is too old", "debian-8", "debian-unstable", "ubuntu-1604")
 class TestMultiMachineKeyAuth(MachineCase):
     additional_machines = {
         'machine2': { }
@@ -71,17 +71,26 @@ class TestMultiMachineKeyAuth(MachineCase):
         self.browser.eval_js("loaded = false")
         self.browser.eval_js("""
             load = function (user) {{
-                var k = require('shell/credentials').keys_instance();
-                k.path = user.home + '/.ssh';
-                k.load('{0}', '{1}').done(function () {{ loaded = true; }}).fail(function (ex) {{ console.log(ex); }});
+                var proc = cockpit.spawn([ 'ssh-add', '{0}' ], {{ pty: true, directory: user.home + '/.ssh' }})
+                    .stream(function(data) {{
+                        if (data.indexOf('passphrase') !== -1)
+                            proc.input('{1}\\n', true);
+                        console.log(data);
+                    }})
+                    .done(function() {{
+                        loaded = true;
+                    }})
+                    .fail(function(ex) {{
+                        console.log(ex);
+                    }});
             }}
         """.format(name, password))
-        self.browser.eval_js("require('base1/cockpit').user().done(load)")
+        self.browser.eval_js("cockpit.user().done(load)")
 
     def check_keys(self, keys):
         def normalize(k):
             return re.sub("/home/admin/\\.ssh/[^ ]*|test@test", "", k)
-        self.assertEqual(normalize(self.browser.eval_js("require('base1/cockpit').spawn([ 'ssh-add', '-l' ])")),
+        self.assertEqual(normalize(self.browser.eval_js("cockpit.spawn([ 'ssh-add', '-l' ])")),
                          normalize("\n".join(keys) + "\n"))
 
     def setUp(self):
@@ -178,11 +187,9 @@ class TestMultiMachineKeyAuth(MachineCase):
         # Logout
         b.logout()
         b.wait_visible("#login")
-        try:
-            m1.execute("ps xa | grep ssh-agent | grep -v grep")
-            assert False, "Logout did not stop ssh agent."
-        except subprocess.CalledProcessError:
-            pass
+
+        # Make sure ssh-agent exits
+        wait(lambda: "ssh-agent" not in m1.execute("ps xa | grep ss[h]-agent || true"))
 
         # Remove authorized keys
         m2.execute("rm /home/user/.ssh/authorized_keys")

@@ -1,0 +1,26 @@
+@import "/page.css";
+@import "/listing.css";
+@import "/table.css";
+
+@import "../../bower_components/c3/c3.css";
+
+.icon-2x-vms {
+    font-size: 2em;
+}
+.icon-3x-vms {
+    font-size: 3em;
+}
+
+.machines-width-max {
+    width: 100%;
+}
+
+.btn + .dropdown-menu.dropdown-menu-right  {
+    right: -4px;
+    left: auto;
+}
+
+.usage-donut-caption {
+    text-align: center;
+    width: 200px;
+}

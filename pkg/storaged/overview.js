@@ -17,17 +17,20 @@
  * along with Cockpit; If not, see <http://www.gnu.org/licenses/>.
  */
 
-define([
-    "jquery",
-    "base1/cockpit",
-    "./mustache",
-    "./plot",
-    "./journal",
-    "storage/utils",
-    "storage/dialog",
-    "storage/permissions",
-    "./flot",
-], function($, cockpit, mustache, plot, journal, utils, dialog, permissions) {
+(function() {
+    "use strict";
+
+    var $ = require("jquery");
+    var cockpit = require("cockpit");
+
+    var mustache = require("mustache");
+    var plot = require("plot");
+    var journal = require("journal");
+
+    var utils = require("./utils");
+    var dialog = require("./dialog");
+    var permissions = require("./permissions");
+
     var _ = cockpit.gettext;
     var C_ = cockpit.gettext;
 
@@ -515,15 +518,15 @@ define([
                                 Title: _("Server Address"),
                                 validate: function (val) {
                                     if (val === "")
-                                        return _("Server address can not be empty.");
+                                        return _("Server address cannot be empty.");
                                 }
                               },
                               { TextInput: "username",
-                                Title: "Username"
+                                Title: _("Username")
 
                               },
                               { PassInput: "password",
-                                Title: "Password"
+                                Title: _("Password")
                               }
                           ],
                           Action: {
@@ -639,14 +642,14 @@ define([
         }
 
         function iscsi_add_with_creds(discover_vals, login_vals) {
-            dialog.open({ Title: "Authentication required",
+            dialog.open({ Title: _("Authentication required"),
                           Fields: [
                               { TextInput: "username",
-                                Title: "Username",
+                                Title: _("Username"),
                                 Value: discover_vals.username
                               },
                               { PassInput: "password",
-                                Title: "Password",
+                                Title: _("Password"),
                                 Value: discover_vals.password
                               }
                           ],
@@ -742,7 +745,7 @@ define([
         };
     }
 
-    return {
+    module.exports = {
         init: init_overview
     };
-});
+}());
