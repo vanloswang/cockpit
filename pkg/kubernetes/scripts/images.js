@@ -268,6 +268,7 @@
         'kubeSelect',
         'kubeLoader',
         function(select, loader) {
+            var watching = false;
 
             /* Called when we have to load images via imagestreams */
             loader.listen(function(objects) {
@@ -317,7 +318,7 @@
              * name to the image itself.
              */
             function handle_image(image) {
-                var item, history, manifest = image.dockerImageManifest;
+                var item, manifest = image.dockerImageManifest;
                 if (manifest) {
                     manifest = JSON.parse(manifest);
                     angular.forEach(manifest.history || [], function(item) {
@@ -337,7 +338,6 @@
             }
 
             /* Load images, but fallback to loading individually */
-            var watching = false;
             function watchImages(until) {
                 watching = true;
                 var a = loader.watch("images", until);
@@ -370,7 +370,7 @@
              * item in the given TagEvent.
              */
             select.register("taggedFirst", function(tag) {
-                var len, results = { };
+                var results = { };
                 if (!tag.items)
                     return select(null);
                 if (tag.items.length)

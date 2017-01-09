@@ -43,7 +43,7 @@ class TestKeys(MachineCase):
         self.allow_journal_messages(".*Failed to create file '/var/lib/cockpit/.*': Permission denied")
 
         # Create a user without any role
-        m.execute("useradd user -m -c 'User' || true")
+        m.execute("useradd user -s /bin/bash -m -c 'User' || true")
         m.execute("echo user:foobar | chpasswd")
 
         m.start_cockpit()
@@ -53,6 +53,7 @@ class TestKeys(MachineCase):
             b.wait_visible("#login")
             b.set_val("#login-user-input", user)
             b.set_val("#login-password-input", password)
+            b.set_checked("#authorized-input", True)
             b.click('#login-button')
             b.expect_load()
             b.enter_page("/system")
@@ -168,7 +169,7 @@ class TestKeys(MachineCase):
             return b.eval_js("cockpit.spawn([ '/bin/sh', '-c', 'ssh-add -l || true' ])")
 
         # Operating systems where auto loading doesn't work
-        auto_load = "atomic" not in os.environ.get("TEST_OS", "")
+        auto_load = "atomic" not in m.image
 
         # Put all the keys in place
         m.execute("mkdir -p /home/admin/.ssh")

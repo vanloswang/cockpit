@@ -187,12 +187,13 @@
                 return dfd.promise();
             }
 
+            var proc;
             var timeout = window.setTimeout(function() {
                 failure = _("Prompting via ssh-keygen timed out");
                 proc.close("terminated");
             }, 10 * 1000);
 
-            var proc = cockpit.spawn(["ssh-keygen", "-p", "-f", name],
+            proc = cockpit.spawn(["ssh-keygen", "-p", "-f", name],
                     { pty: true, environ: [ "LC_ALL=C" ], err: "out", directory: self.path })
                 .always(function() {
                     window.clearInterval(timeout);
@@ -211,7 +212,7 @@
                         if (old_exps[i].test(buffer)) {
                             buffer = "";
                             failure = _("Old password not accepted");
-                            proc.input(old_pass + "\n", true);
+                            this.input(old_pass + "\n", true);
                             return;
                         }
                     }
@@ -219,7 +220,7 @@
                     for (i = 0; i < new_exps.length; i++) {
                         if (new_exps[i].test(buffer)) {
                             buffer = "";
-                            proc.input(new_pass + "\n", true);
+                            this.input(new_pass + "\n", true);
                             failure = _("Failed to change password");
                             sent_new = true;
                             return;
@@ -247,12 +248,13 @@
             var output = "";
             var failure = _("Not a valid private key");
 
+            var proc;
             var timeout = window.setTimeout(function() {
                 failure = _("Prompting via ssh-add timed out");
                 proc.close("terminated");
             }, 10 * 1000);
 
-            var proc = cockpit.spawn(["ssh-add", name],
+            proc = cockpit.spawn(["ssh-add", name],
                     { pty: true, environ: [ "LC_ALL=C" ], err: "out", directory: self.path })
                 .always(function() {
                     window.clearInterval(timeout);
@@ -276,10 +278,10 @@
                     } else if (ask_exp.test(buffer)) {
                         buffer = "";
                         failure = _("Password not accepted");
-                        proc.input(password + "\n", true);
+                        this.input(password + "\n", true);
                     } else if (bad_exp.test(buffer)) {
                         buffer = "";
-                        proc.input("\n", true);
+                        this.input("\n", true);
                     }
                 });
 
@@ -307,7 +309,6 @@
 
         /* The button to deauthorize cockpit */
         $("#credential-authorize button").on("click", function(ev) {
-            $("#credential-authorize").remove();
             cockpit.drop_privileges(false);
             ev.preventDefault();
         });
@@ -316,7 +317,7 @@
 
             /* Show and hide panels */
             .on("click", "tr.listing-ct-item", function(ev) {
-                var body, open;
+                var body;
                 if ($(ev.target).parents(".listing-ct-actions, ul").length === 0) {
                     body = $(ev.target).parents("tbody");
                     body.toggleClass("open").removeClass("unlock");
@@ -417,7 +418,7 @@
             })
 
             .on("change keypress", "input", function(ev) {
-                var dl, body = $(this).parents("tbody");
+                var body = $(this).parents("tbody");
                 if (ev.type == "keypress" && ev.keyCode == 13)
                     $(this).parents("dl").find(".btn-primary").click();
                 body.find(".alert").hide();

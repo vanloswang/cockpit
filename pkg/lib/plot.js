@@ -26,7 +26,6 @@ require("jquery-flot/jquery.flot.time");
 
 var plotter = { };
 
-var _ = cockpit.gettext;
 var C_ = cockpit.gettext;
 
 /* A thin abstraction over flot and metrics channels.  It mostly
@@ -438,6 +437,9 @@ plotter.plot = function plot(element, x_range_seconds, x_stop_seconds) {
                                });
         }
 
+        var instances = { };
+        var last_instance = null;
+
         function reset_series() {
             if (channel)
                 channel.close();
@@ -460,9 +462,6 @@ plotter.plot = function plot(element, x_range_seconds, x_stop_seconds) {
             sync_suppressed--;
             sync();
         }
-
-        var instances = { };
-        var last_instance = null;
 
         function add_instance(name, selector) {
             if (instances[name])
@@ -1001,7 +1000,6 @@ function setup_plot(graph_id, grid, data, user_options) {
               }
     };
 
-    var num_points = 300;
     var plot;
     var running = false;
     var self;
@@ -1088,199 +1086,6 @@ function setup_plot(graph_id, grid, data, user_options) {
     $(grid).on('notify', refresh);
     $(window).on('resize', resize);
     maybe_start();
-
-    self = { start: start, stop: stop,
-             resize: resize, element: inner_div[0],
-             set_yaxis_max: set_yaxis_max,
-             destroy: destroy
-           };
-    return self;
-}
-
-function setup_plot_x(graph_id, resmon, data, user_options, store_samples) {
-    var options = {
-        colors: [ "#0099d3" ],
-        legend: { show: false },
-        series: { shadowSize: 0,
-                  lines: { lineWidth: 0.0,
-                           fill: 1.0
-                         }
-                },
-        xaxis: { tickFormatter: function() { return ""; } },
-        yaxis: { tickFormatter: function() { return ""; } },
-        // The point radius influences
-        // the margin around the grid
-        // even if no points are plotted.
-        // We don't want any margin, so
-        // we set the radius to zero.
-        points: { radius: 0 },
-        grid: { borderWidth: 1,
-                aboveData: true,
-                color: "black",
-                borderColor: $.color.parse("black").scale('a', 0.22).toString(),
-                labelMargin: 0
-              }
-    };
-
-    var num_series = data.length;
-    var num_points;
-    var got_historical_data = false;
-    var plot;
-    var running = false;
-    var ready = false;
-    var self;
-
-    $.extend(true, options, user_options);
-
-    // We put the plot inside its own div so that we can give that div
-    // a fixed size which only changes when we can also immediately
-    // call plot.resize().  Otherwise, the labels and legends briefly
-    // get out of sync during resizing.
-
-    var outer_div = $(graph_id);
-    var inner_div = $('<div/>');
-    outer_div.empty();
-    outer_div.append(inner_div);
-
-    function init() {
-        if (!ready && resmon.NumSamples !== undefined) {
-            // Initialize series
-            num_points = resmon.NumSamples;
-            for (var n = 0; n < num_series; n++) {
-                var series = [];
-                for (var m = 0; m < num_points; m++) {
-                    series[m] = [m, 0];
-                }
-                data[n].data = series;
-            }
-
-            $(resmon).on("NewSample", new_sample_handler);
-
-            resmon.call("GetSamples", {},
-                        function(error, result) {
-                            if (!error) {
-                                got_historical_samples (result);
-                                got_historical_data = true;
-                                refresh ();
-                            }
-                        });
-
-            $(window).on('resize', resize);
-
-            ready = true;
-            maybe_start();
-        }
-    }
-
-    function sync_divs ()
-    {
-        inner_div.width(outer_div.width());
-        inner_div.height(outer_div.height());
-    }
-
-    // Updating flot options is tricky and somewhat implementation
-    // defined.  Different options needs different approaches.  So we
-    // just have very specific functions for changing specific options
-    // until a pattern emerges.
-
-    function set_yaxis_max (max) {
-        if (plot) {
-            plot.getAxes().yaxis.options.max = max;
-            refresh ();
-        } else {
-            options.yaxis.max = max;
-        }
-    }
-
-    function start ()
-    {
-        running = true;
-        maybe_start();
-    }
-
-    function maybe_start()
-    {
-        if (ready && running && outer_div.width() !== 0 && outer_div.height() !== 0) {
-            if (!plot) {
-                sync_divs ();
-                plot = $.plot(inner_div, data, options);
-            } else
-                resize();
-        }
-    }
-
-    function stop ()
-    {
-        running = false;
-    }
-
-    function refresh ()
-    {
-        if (plot && running) {
-            plot.setData(data);
-            if (user_options.setup_hook)
-                user_options.setup_hook(plot);
-            plot.setupGrid();
-            plot.draw();
-        }
-    }
-
-    function resize ()
-    {
-        if (plot && running) {
-            sync_divs ();
-            if (inner_div.width() > 0 && inner_div.height() > 0)
-                plot.resize();
-            refresh();
-        }
-    }
-
-    function new_samples (samples)
-    {
-        var series;
-        var i, n, m, floor;
-
-        for (n = 0; n < data.length; n++) {
-            series = data[n].data;
-            for (m = 0; m < series.length-1; m++) {
-                series[m][1] = series[m+1][1];
-                series[m][2] = series[m+1][2];
-            }
-        }
-
-        store_samples (samples, data[0].data.length-1);
-    }
-
-    function got_historical_samples (history)
-    {
-        var n, offset;
-
-        offset = data[0].data.length - history.length;
-        for (n = 0; n < history.length; n++) {
-            store_samples (history[n][1], n+offset);
-        }
-    }
-
-    function new_sample_handler (event, timestampUsec, samples) {
-        if (got_historical_data) {
-            new_samples (samples);
-            refresh ();
-        }
-    }
-
-    function destroy () {
-        $(self).trigger('destroyed');
-        $(resmon).off('notify:NumSamples', init);
-        $(resmon).off("NewSample", new_sample_handler);
-        $(window).off('resize', resize);
-        $(outer_div).empty();
-        plot = null;
-    }
-
-    if (resmon.NumSamples !== undefined)
-        init();
-    else
-        $(resmon).on('notify:NumSamples', init);
 
     self = { start: start, stop: stop,
              resize: resize, element: inner_div[0],

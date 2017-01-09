@@ -151,8 +151,6 @@ var phantom_checkpoint = phantom_checkpoint || function () { };
                 frame.setAttribute("name", name);
                 frame.style.display = "none";
 
-                var parts = component.split("/");
-
                 var base, checksum;
                 if (machine)
                     checksum = machine.checksum;
@@ -201,8 +199,10 @@ var phantom_checkpoint = phantom_checkpoint || function () { };
                 if (control.channel !== undefined) {
                     for (seed in source_by_seed)
                         source_by_seed[seed].window.postMessage(message, origin);
+                } else if (control.command == "hint") {
+                    if (control.credential)
+                        index.authorize_changed(control.credential);
                 }
-                return true; /* still deliver locally */
 
             /* Forward message to relevant frame */
             } else if (channel) {
@@ -215,10 +215,11 @@ var phantom_checkpoint = phantom_checkpoint || function () { };
                         return false; /* Stop delivery */
                     }
                 }
-                /* Still deliver the message locally */
-                return true;
             }
-        });
+
+            /* Still deliver the message locally */
+            return true;
+        }, false);
 
         function perform_jump(child, control) {
             var current_frame = index.current_frame();
@@ -329,6 +330,7 @@ var phantom_checkpoint = phantom_checkpoint || function () { };
                 return;
 
             var source = source_by_name[child.name];
+            var control;
 
             /* Closing the transport */
             if (data.length === 0) {
@@ -339,7 +341,7 @@ var phantom_checkpoint = phantom_checkpoint || function () { };
 
             /* A control message */
             if (data[0] == '\n') {
-                var control = JSON.parse(data.substring(1));
+                control = JSON.parse(data.substring(1));
                 if (control.command === "init") {
                     if (source)
                         unregister(source);
@@ -361,9 +363,12 @@ var phantom_checkpoint = phantom_checkpoint || function () { };
                     return;
 
                 } else if (control.command === "hint") {
-                    /* watchdog handles current host for now */
-                    if (control.hint == "restart" && control.host != cockpit.transport.host)
-                        index.expect_restart(control.host);
+                    if (control.hint == "restart") {
+                        /* watchdog handles current host for now */
+                        if (control.host != cockpit.transport.host)
+                            index.expect_restart(control.host);
+                    } else
+                        cockpit.hint(control.hint, control);
                     return;
                 } else if (control.command == "oops") {
                     index.show_oops();
@@ -386,7 +391,7 @@ var phantom_checkpoint = phantom_checkpoint || function () { };
             }
 
             /* Everything else gets forwarded */
-            cockpit.transport.inject(data);
+            cockpit.transport.inject(data, true);
         }
 
 
@@ -531,7 +536,6 @@ var phantom_checkpoint = phantom_checkpoint || function () { };
                     .append(a);
             }
 
-            var machine, items = { };
             if (shell_embedded) {
                 navbar.hide();
             } else {
@@ -659,6 +663,10 @@ var phantom_checkpoint = phantom_checkpoint || function () { };
 
         self.expect_restart = function (host) {
             $(self).triggerHandler("expect_restart", host);
+        };
+
+        self.authorize_changed = function(value) {
+            $(self.credential_sel).toggle(value != "clear");
         };
 
         /* Menu items */

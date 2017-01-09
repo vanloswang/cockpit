@@ -37,7 +37,9 @@
     /* OVERVIEW PAGE
      */
 
+
     function init_overview(client, jobs) {
+        var read_series, write_series;
 
         $('#vgroups').toggle(client.features.lvm2);
         $('#iscsi-sessions').toggle(client.features.iscsi);
@@ -239,7 +241,8 @@
                         block.CryptoBackingDevice == "/" &&
                         block.MDRaid == "/" &&
                         (!block_lvm2 || block_lvm2.LogicalVolume == "/") &&
-                        !block.HintIgnore);
+                        !block.HintIgnore &&
+                        block.Size > 0);
             }
 
             function make_other(path) {
@@ -359,7 +362,7 @@
         read_plot_options.setup_hook = make_plot_setup("#storage-reading-unit");
         var read_plot = plot.plot($("#storage-reading-graph"), 300);
         read_plot.set_options(read_plot_options);
-        var read_series = read_plot.add_metrics_stacked_instances_series(read_plot_data, { });
+        read_series = read_plot.add_metrics_stacked_instances_series(read_plot_data, { });
         read_plot.start_walking();
         $(read_series).on('hover', highlight_drive);
 
@@ -381,7 +384,7 @@
         write_plot_options.setup_hook = make_plot_setup("#storage-writing-unit");
         var write_plot = plot.plot($("#storage-writing-graph"), 300);
         write_plot.set_options(write_plot_options);
-        var write_series = write_plot.add_metrics_stacked_instances_series(write_plot_data, { });
+        write_series = write_plot.add_metrics_stacked_instances_series(write_plot_data, { });
         write_plot.start_walking();
         $(write_series).on('hover', highlight_drive);
 

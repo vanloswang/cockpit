@@ -36,7 +36,7 @@ struct _CockpitCreds {
   gint poisoned;
   gchar *user;
   gchar *application;
-  gchar *password;
+  GBytes *password;
   gchar *rhost;
   gchar *gssapi_creds;
   gchar *csrf_token;
@@ -44,6 +44,7 @@ struct _CockpitCreds {
   krb5_ccache krb5_ccache;
   gchar *krb5_ccache_name;
   JsonObject *login_data;
+  GList *bytes;
 };
 
 G_DEFINE_BOXED_TYPE (CockpitCreds, cockpit_creds, cockpit_creds_ref, cockpit_creds_unref);
@@ -53,10 +54,12 @@ cockpit_creds_free (gpointer data)
 {
   CockpitCreds *creds = data;
 
+  cockpit_creds_poison (creds);
+
+  g_list_free_full (creds->bytes, (GDestroyNotify)g_bytes_unref);
+
   g_free (creds->user);
   g_free (creds->application);
-  cockpit_secclear (creds->password, -1);
-  g_free (creds->password);
   g_free (creds->rhost);
   g_free (creds->gssapi_creds);
   g_free (creds->csrf_token);
@@ -118,6 +121,9 @@ out:
  * a COCKPIT_CRED_PASSWORD, COCKPIT_CRED_RHOST, or similar constant
  * followed by the value.
  *
+ * COCKPIT_CRED_PASSWORD is a GBytes and should contain a null terminated
+ * string with the terminator not included in the count.
+ *
  * Returns: (transfer full): the new set of credentials.
  */
 CockpitCreds *
@@ -125,6 +131,7 @@ cockpit_creds_new (const gchar *user,
                    const gchar *application,
                    ...)
 {
+  GBytes *password = NULL;
   krb5_error_code code;
   CockpitCreds *creds;
   const char *type;
@@ -147,7 +154,7 @@ cockpit_creds_new (const gchar *user,
       if (type == NULL)
         break;
       else if (g_str_equal (type, COCKPIT_CRED_PASSWORD))
-        creds->password = g_strdup (va_arg (va, const char *));
+        password = va_arg (va, GBytes *);
       else if (g_str_equal (type, COCKPIT_CRED_RHOST))
         creds->rhost = g_strdup (va_arg (va, const char *));
       else if (g_str_equal (type, COCKPIT_CRED_GSSAPI))
@@ -160,6 +167,9 @@ cockpit_creds_new (const gchar *user,
         g_assert_not_reached ();
     }
   va_end (va);
+
+  if (password)
+    cockpit_creds_set_password (creds, password);
 
   if (creds->gssapi_creds)
     {
@@ -213,8 +223,7 @@ cockpit_creds_poison (CockpitCreds *creds)
 {
   g_return_if_fail (creds != NULL);
   g_atomic_int_set (&creds->poisoned, 1);
-  if (creds->password)
-    memset (creds->password, 0, strlen (creds->password));
+  cockpit_creds_set_password (creds, NULL);
 }
 
 const gchar *
@@ -231,13 +240,37 @@ cockpit_creds_get_application (CockpitCreds *creds)
   return creds->application;
 }
 
-const gchar *
+GBytes *
 cockpit_creds_get_password (CockpitCreds *creds)
 {
   g_return_val_if_fail (creds != NULL, NULL);
   if (g_atomic_int_get (&creds->poisoned))
       return NULL;
   return creds->password;
+}
+
+void
+cockpit_creds_set_password (CockpitCreds *creds,
+                            GBytes *password)
+{
+  gpointer data;
+  gsize length;
+
+  g_return_if_fail (creds != NULL);
+
+  if (creds->password)
+    {
+      data = (gpointer)g_bytes_get_data (creds->password, &length);
+      cockpit_secclear (data, length);
+      creds->password = NULL;
+    }
+  if (password)
+    {
+      data = (gpointer)g_bytes_get_data (password, &length);
+      g_assert (((gchar *)data)[length] == '\0');
+      creds->password = g_bytes_ref (password);
+      creds->bytes = g_list_prepend (creds->bytes, creds->password);
+    }
 }
 
 const gchar *

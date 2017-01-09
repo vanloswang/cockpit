@@ -105,8 +105,10 @@ The following fields are defined:
  * "host": The destination host for the channel, defaults to "localhost"
  * "user": Optional alternate user for authenticating with host
  * "superuser": Optional. Use "require" to run as root, or "try" to attempt to run as root.
- * "group": A group that can later be used with the "kill" command.
+ * "group": A group that can later be used with the "kill" command. You should avoid
+   using group names without punctuation as they can have special meanings.
  * "capabilities": Optional, array of capability strings required from the bridge
+ * "session": Optional, set to "private" or "shared". Defaults to "shared"
 
 If "binary" is set then this channel transfers binary messages. If "binary"
 is set to "base64" then messages in the channel are encoded using "base64",
@@ -128,6 +130,12 @@ An example of an open:
     }
 
 This message is sent to the cockpit-bridge.
+
+The caller can control whether to open a new bridge session or not by setting
+the "session" field to "private" or "shared". A "private" session will always
+start another bridge just for this channel. If this option is not specified
+then typically the channel will share an already existing session. There are
+certain heuristics for compatibility, where it defaults to private.
 
 The open fields are also used with external channels. External channels are
 channels that have their payload sent via a separate HTTP request or another
@@ -252,7 +260,7 @@ Command: authorize
 The "authorize" command is for communication of reauthorization challenges
 and responses between cockpit-bridge and cockpit-ws.
 
-The following fields are defined:
+For challenge/response authorization, the following fields are defined:
 
  * "cookie": an string sent with a challenge, that must be present in
    the corresponding response.
@@ -278,6 +286,19 @@ Example authorize challenge and response messages:
         "response": "crypt1:$6$r0oetn2039ntoen..."
     }
 
+For credential cache authorization, the following fields are defined:
+
+ * "credential": One of the following words: "inject" or "password"
+
+When set to "inject" a channel must be specified a cached password
+credential will be injected as its own payload into the channel. If no
+password is cached, an empty payload will be injected.
+
+When set to "password" then a "password" field should also be present
+which represents a new password to cache, which replaces any current
+passwords. If no password field is present then the passwords are cleared.
+
+
 Command: kill
 -------------
 
@@ -289,9 +310,7 @@ The following fields are defined:
  * "host": optional string kills channels with the given host
  * "group": optional string to select only channels opened with the given "group"
 
-If no fields are specified then all channels are terminated. The "kill" command
-is not forwarded.
-
+If no fields are specified then all channels are terminated.
 
 Command: logout
 ---------------
@@ -311,6 +330,13 @@ Example logout message:
     }
 
 The "logout" command is broadcast to all bridge instances.
+
+
+Command: hint
+-------------
+
+The "hint" command provides hints to other components about the state of things
+or what's going to happen next. The remainder of the fields are extensible.
 
 
 Payload: null
@@ -376,6 +402,9 @@ invalid.
 
 An optional "id" field indicates that a response is desired, which will be
 sent back in a "reply" or "error" message with the same "id" field.
+
+If an interface has been exported, then the bridge will send "call" messages
+in its direction for calls received for on that interface.
 
 Method reply messages are JSON objects with a "reply" field whose value is
 an array, the array contains another array of out arguments, or null if
@@ -552,6 +581,25 @@ is unowned.
     {
         "owner": "1:"
     }
+
+A "publish" message can be used to export DBus interfaces on the bus. The bridge
+will then send "call" messages back to the frontend for each method invocation
+on the published interface and object path. The interface must first be described
+with DBus meta information. If a cookie is specified then a reply will be sent
+when the interface is published. If the interface is already published at the given
+path, it will be replaced.
+
+   {
+       "publish": [ "/a/path", "org.Interface" ],
+       "id": "cookie"
+   }
+
+An "unpublish" message will unexport a DBus interface on the bus. It is not an
+error if no such interface has been published.
+
+   {
+       "unpublish": [ "/a/path", "org.Interface" ],
+   }
 
 DBus types are encoded in various places in these messages, such as the
 arguments. These types are encoded as follows:

@@ -224,7 +224,7 @@
              * the user can't see all projects, and one is loaded.
              */
             loader.listen(function(present) {
-                var link, added, object;
+                var link, object;
                 for (link in present) {
                     object = present[link];
                     if (object.kind == "Namespace" || object.kind == "Project") {
@@ -318,7 +318,7 @@
             for (i in items)
                 sorted.push(items[i]);
             if (!angular.isArray(field))
-                field = [ String(criteria) ];
+                field = [ String(field) ];
             var criteria = field.map(function(v) {
                 return v.split('.');
             });

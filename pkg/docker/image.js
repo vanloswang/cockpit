@@ -22,11 +22,10 @@
 
     var $ = require("jquery");
     var cockpit = require("cockpit");
+    var React = require("react");
 
-    var Mustache = require("mustache");
-
-    var docker = require("./docker");
     var util = require("./util");
+    var view = require("./containers-view.jsx");
 
     require("./run");
 
@@ -40,7 +39,7 @@
         },
 
         getTitle: function() {
-            return C_("page-title", "Containers");
+            return C_("page-title", "Images");
         },
 
         toggle_danger: function(val) {
@@ -83,66 +82,54 @@
                     self.update();
             });
 
+            $('#image-details .image-details-used').toggle(false);
+
             $(this.client).on('container.image-details', function(event, id, container) {
-                if (!container || (container.Config && container.Config.Image == self.image_id))
-                    self.render_container(id, container);
+                self.maybe_render_container(id, container);
             });
 
             for (var cid in this.client.containers) {
                 var c = this.client.containers[cid];
-                if (c.Config && c.Config.Image == self.image_id)
-                    self.render_container(c.Id, c);
+                self.maybe_render_container(c.Id, c);
             }
 
             this.update();
         },
 
         update: function() {
-            $('#image-details-id').text("");
-            $('#image-details-entrypoint').text("");
-            $('#image-details-command').text("");
-            $('#image-details-created').text("");
-            $('#image-details-author').text("");
-            $('#image-details-ports').text("");
-
             var info = this.client.images[this.image_id];
             util.docker_debug("image-details", this.image_id, info);
 
-            if (!info) {
-                $('#image-details-id').text(_("Not found"));
-                return;
-            }
+            React.render(React.createElement(view.ImageInline, {
+                image: info
+            }), document.querySelector('#image-details .content'));
 
             var waiting = !!(this.client.waiting[this.image_id]);
-            $('#image-details-buttons div.waiting').toggle(waiting);
-            $('#image-details-buttons button').toggle(!waiting);
+            $('#image-details-buttons div.spinner').toggle(info && waiting);
+            $('#image-details-buttons button').toggle(info && !waiting);
 
-            if (info.RepoTags && info.RepoTags.length > 0)
-                this.name = info.RepoTags[0];
-
-            $('#image-details .content-filter h3 span').text(this.name);
-
-            $('#image-details-id').text(info.Id);
-            $('#image-details-tags').html(util.multi_line(info.RepoTags));
-            $('#image-details-created').text(info.Created);
-            $('#image-details-author').text(info.Author);
-
-            var config = info.Config;
-            if (config) {
-                var ports = [ ];
-                for (var p in config.ExposedPorts) {
-                    ports.push(p);
-                }
-
-                $('#image-details-entrypoint').text(util.quote_cmdline(config.Entrypoint));
-                $('#image-details-command').text(util.quote_cmdline(config.Cmd));
-                $('#image-details-ports').text(ports.join(', '));
+            if (info) {
+                if (info.RepoTags && info.RepoTags.length > 0)
+                    this.name = info.RepoTags[0];
             }
+
+            $('#image-details .content-filter h3 span').text(this.name || this.image_id);
         },
 
-        render_container: function (id, container) {
-            util.render_container(this.client, $('#image-details-containers'), "I",
-                                  id, container, this.danger_enabled);
+        maybe_render_container: function(id, container) {
+
+            /* Does this container match? */
+            if (container &&
+                container.Image != this.image_id &&
+                (container.Config && container.Config.Image != this.image_id)) {
+                container = null;
+            }
+
+            var panel = $('#image-details-containers');
+            util.render_container(this.client, panel, "I", id, container, this.danger_enabled);
+
+            /* Hide the entire block if no containers listed */
+            $('#image-details .image-details-used').toggle(panel.find('table > tbody > tr > td').length > 0);
         },
 
         delete_image: function () {

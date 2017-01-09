@@ -20,6 +20,7 @@
 var $ = require("jquery");
 var cockpit = require("cockpit");
 
+var React = require("react");
 var Mustache = require("mustache");
 var authorized_keys = require("./authorized-keys");
 
@@ -72,18 +73,19 @@ function passwd_self(old_pass, new_pass) {
         /.*BAD PASSWORD:.*/
     ];
 
-    var dfd = $.Deferred();
+    var dfd = cockpit.defer();
     var buffer = "";
     var sent_new = false;
     var failure = _("Old password not accepted");
     var i;
 
+    var proc;
     var timeout = window.setTimeout(function() {
         failure = _("Prompting via passwd timed out");
         proc.close("terminated");
     }, 10 * 1000);
 
-    var proc = cockpit.spawn(["/usr/bin/passwd"], { pty: true, environ: [ "LC_ALL=C" ], err: "out" })
+    proc = cockpit.spawn(["/usr/bin/passwd"], { pty: true, environ: [ "LC_ALL=C" ], err: "out" })
         .always(function() {
             window.clearInterval(timeout);
         })
@@ -100,7 +102,7 @@ function passwd_self(old_pass, new_pass) {
             for (i = 0; i < old_exps.length; i++) {
                 if (old_exps[i].test(buffer)) {
                     buffer = "";
-                    proc.input(old_pass + "\n", true);
+                    this.input(old_pass + "\n", true);
                     return;
                 }
             }
@@ -108,7 +110,7 @@ function passwd_self(old_pass, new_pass) {
             for (i = 0; i < new_exps.length; i++) {
                 if (new_exps[i].test(buffer)) {
                     buffer = "";
-                    proc.input(new_pass + "\n", true);
+                    this.input(new_pass + "\n", true);
                     failure = _("Failed to change password");
                     sent_new = true;
                     return;
@@ -127,9 +129,8 @@ function passwd_self(old_pass, new_pass) {
 }
 
 function passwd_change(user, new_pass) {
-    var dfd = $.Deferred();
+    var dfd = cockpit.defer();
 
-    var buffer = "";
     cockpit.spawn([ "chpasswd" ], {superuser: "require", err: "out" })
         .input(user + ":" + new_pass)
         .done(function() {
@@ -154,7 +155,7 @@ function passwd_change(user, new_pass) {
  * that return promises
  */
 function chain(functions) {
-    var dfd = $.Deferred();
+    var dfd = cockpit.defer();
     var i = 0;
 
     /* Either an array or functions passed */
@@ -237,7 +238,7 @@ function parse_group_content(content) {
 }
 
 function password_quality(password) {
-    var dfd = $.Deferred();
+    var dfd = cockpit.defer();
 
     cockpit.spawn('/usr/bin/pwscore', { "err": "message" })
        .input(password)
@@ -270,6 +271,31 @@ function is_user_in_group(user, group) {
 
     return false;
 }
+
+var AccountItem = React.createClass({
+    displayName: 'AccountItem',
+    click: function(ev) {
+        if (ev && ev.button === 0)
+            cockpit.location.go([this.props.name]);
+    },
+    render: function() {
+        return React.createElement('div', {className: "cockpit-account", onClick: this.click },
+            React.createElement('div', {className: "cockpit-account-pic pficon pficon-user"}),
+            React.createElement('div', {className: "cockpit-account-real-name"}, this.props.gecos),
+            React.createElement('div', {className: "cockpit-account-user-name"}, this.props.name)
+        );
+    }
+});
+
+var AccountList = React.createClass({
+    displayName: 'AccountList',
+    render: function() {
+        var i, items = [];
+        for (i in this.props.accounts)
+            items.push(React.createElement(AccountItem, this.props.accounts[i]));
+        return React.createElement('div', null, items);
+    }
+});
 
 function log_unexpected_error(error) {
     console.warn("Unexpected error", error);
@@ -316,30 +342,22 @@ PageAccounts.prototype = {
     },
 
     update: function() {
-        var list = $("#accounts-list");
-
         this.accounts.sort (function (a, b) {
                                 if (! a["gecos"]) return -1;
                                 else if (! b["gecos"]) return 1;
                                 else return a["gecos"].localeCompare(b["gecos"]);
                             });
 
-        list.empty();
-        for (var i = 0; i < this.accounts.length; i++) {
-            if ((this.accounts[i]["uid"] < 1000 && this.accounts[i]["uid"] !== 0) ||
-                  this.accounts[i]["shell"].match(/^(\/usr)?\/sbin\/nologin/) ||
-                  this.accounts[i]["shell"] === '/bin/false')
-                continue;
-            var img =
-                $('<div/>', { 'class': "cockpit-account-pic pficon pficon-user" });
-            var div =
-                $('<div/>', { 'class': "cockpit-account" }).append(
-                    img,
-                    $('<div/>', { 'class': "cockpit-account-real-name" }).text(this.accounts[i]["gecos"]),
-                    $('<div/>', { 'class': "cockpit-account-user-name" }).text(this.accounts[i]["name"]));
-            div.on('click', $.proxy(this, "go", this.accounts[i]["name"]));
-            list.append(div);
-        }
+        var accounts = this.accounts.filter(function(account) {
+            return !((account["uid"] < 1000 && account["uid"] !== 0) ||
+                     account["shell"].match(/^(\/usr)?\/sbin\/nologin/) ||
+                     account["shell"] === '/bin/false');
+        });
+
+        React.render(
+            React.createElement(AccountList, { accounts: accounts }),
+            document.getElementById('accounts-list')
+        );
     },
 
     create: function () {
@@ -408,7 +426,7 @@ PageAccountsCreate.prototype = {
         }
 
         /* The first check is immediately complete */
-        var dfd = $.Deferred();
+        var dfd = cockpit.defer();
         if (fails.length)
             dfd.reject(fails);
         else
@@ -447,7 +465,7 @@ PageAccountsCreate.prototype = {
     create: function() {
         var tasks = [
             function create_user() {
-                var prog = ["/usr/sbin/useradd"];
+                var prog = ["/usr/sbin/useradd", "-s", "/bin/bash"];
                 if ($('#accounts-create-real-name').val()) {
                     prog.push('-c');
                     prog.push($('#accounts-create-real-name').val());
@@ -492,7 +510,7 @@ PageAccountsCreate.prototype = {
     },
 
     check_username: function() {
-        var dfd = $.Deferred();
+        var dfd = cockpit.defer();
         var username = $('#accounts-create-user-name').val();
 
         for (var i = 0; i < username.length; i++) {
@@ -740,7 +758,7 @@ PageAccount.prototype = {
 
     get_locked: function(update_display) {
         update_display = typeof update_display !== 'undefined' ? update_display : true;
-        var dfd = $.Deferred();
+        var dfd = cockpit.defer();
         var self = this;
 
         function parse_locked(content) {
@@ -1000,8 +1018,6 @@ function PageAccount(user) {
     this._init(user);
 }
 
-var crop_handle_width = 20;
-
 PageAccountConfirmDelete.prototype = {
     _init: function() {
         this.id = "account-confirm-delete-dialog";
@@ -1083,7 +1099,7 @@ PageAccountSetPassword.prototype = {
             ex.target = "#account-set-password-pw2";
         }
 
-        var dfd = $.Deferred();
+        var dfd = cockpit.defer();
         if (ex)
             dfd.reject(ex);
         else

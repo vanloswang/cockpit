@@ -39,10 +39,9 @@ EXTRA_DIST = \
 	README.md \
 	$(NULL)
 
-clean-local:
+clean-local::
 	find $(builddir) -name '*.gc??' -delete
 	find $(srcdir) -name '*.pyc' -delete
-	find $(builddir)/dist -mindepth 1 -name README.md -prune -o -print | xargs rm -rf
 
 SUFFIXES = .css .css.gz .html .html.gz .js .js.gz .jsx .map .map.gz .mo .po .svg .svg.gz .woff .woff.gz .1 .8 .5
 
@@ -67,6 +66,24 @@ COPY_RULE = \
 GZ_RULE = \
 	$(V_GZIP) $(MKDIR_P) $(dir $@) && \
 	gzip -n -c $< > $@.tmp && $(MV) $@.tmp $@
+
+UGLIFY_JS = $(srcdir)/node_modules/.bin/uglifyjs
+
+CLEAN_CSS = $(srcdir)/node_modules/.bin/cleancss
+
+MIN_JS_RULE = \
+	$(AM_V_GEN) $(MKDIR_P) $(dir $@) && \
+	$(srcdir)/tools/missing $(UGLIFY_JS) $^ --mangle --comments 'preserve' --beautify \
+		--source-map $@.map --source-map-url $(notdir $@).map --source-map-include-sources > $@.tmp && \
+	$(MV) $@.tmp $@
+
+MIN_CSS_RULE = \
+	$(AM_V_GEN) $(MKDIR_P) $(dir $@) && \
+	$(srcdir)/tools/missing $(CLEAN_CSS) --keep-line-breaks --output=$@ \
+		--source-map --source-map-inline-sources $^
+
+JSHINT_RULE = \
+	$(V_CHECK) $(srcdir)/tools/missing $(srcdir)/tools/jshint $<
 
 .css.css.gz:
 	$(GZ_RULE)
@@ -143,14 +160,14 @@ WEBPACK_MAKE = NODE_ENV=$(NODE_ENV) SRCDIR=$(srcdir) BUILDDIR=$(builddir) \
 	       $(srcdir)/tools/missing $(srcdir)/tools/webpack-make
 WEBPACK_RULE = $(V_WEBPACK) $(WEBPACK_MAKE)
 
-all-local:: $(WEBPACK_DEPS) $(WEBPACK_OUTPUTS) $(WEBPACK_INSTALL)
-	@true
 distclean-local::
 	rm -rf dist/
 install-data-local:: $(WEBPACK_INSTALL)
+	$(MKDIR_P) $(DESTDIR)$(pkgdatadir)
 	tar -cf - $^ | tar -C $(DESTDIR)$(pkgdatadir) --strip-components=1 -xvf -
 	$(SED_SUBST) -i $(DESTDIR)$(pkgdatadir)/*/manifest.json
 install-data-local:: $(WEBPACK_DEBUG)
+	$(MKDIR_P) $(DESTDIR)$(debugdir)$(pkgdatadir)
 	tar -cf - $^ | tar -C $(DESTDIR)$(debugdir)$(pkgdatadir) --strip-components=1 -xvf -
 uninstall-local::
 	find $(DESTDIR)$(pkgdatadir) -type f -delete
@@ -247,8 +264,6 @@ SED_SUBST = sed \
         -e 's,[@]selinux_config_type[@],$(COCKPIT_SELINUX_CONFIG_TYPE),g' \
         $(NULL)
 
-UGLIFY_JS = $(srcdir)/node_modules/.bin/uglifyjs
-
 testassetsdir = $(datadir)/cockpit-test-assets
 testassets_programs =
 testassets_data =
@@ -287,6 +302,8 @@ dist/fonts/%.woff:
 	cp -L $(subst dist/fonts,$(BOWER)/patternfly/dist/fonts,$@) $@.tmp && $(MV) $@.tmp $@
 
 EXTRA_DIST += $(OPENSANS_FONTS)
+
+CLEANFILES += $(OPENSANS_FONTS)
 
 if ENABLE_DOC
 

@@ -30,6 +30,7 @@
 #include "common/cockpitconf.h"
 #include "common/cockpitjson.h"
 #include "common/cockpitlog.h"
+#include "common/cockpitmemory.h"
 #include "common/cockpitpipetransport.h"
 #include "common/cockpitsystem.h"
 #include "common/cockpitwebinject.h"
@@ -443,7 +444,6 @@ struct _CockpitWebService {
   guint ping_timeout;
   gint callers;
   guint next_internal_id;
-  GHashTable *channel_groups;
 };
 
 typedef struct {
@@ -500,7 +500,6 @@ cockpit_web_service_finalize (GObject *object)
   cockpit_creds_unref (self->creds);
   if (self->ping_timeout)
     g_source_remove (self->ping_timeout);
-  g_hash_table_destroy (self->channel_groups);
 
   G_OBJECT_CLASS (cockpit_web_service_parent_class)->finalize (object);
 }
@@ -548,7 +547,6 @@ process_close (CockpitWebService *self,
     cockpit_session_remove_channel (&self->sessions, session, channel);
   if (socket)
     cockpit_socket_remove_channel (&self->sockets, socket, channel);
-  g_hash_table_remove (self->channel_groups, channel);
 
   return TRUE;
 }
@@ -573,75 +571,145 @@ process_and_relay_close (CockpitWebService *self,
 static gboolean
 process_kill (CockpitWebService *self,
               CockpitSocket *socket,
-              JsonObject *options)
+              JsonObject *options,
+              GBytes *payload)
 {
   CockpitSession *session;
   GHashTableIter iter;
-  gpointer channel;
   const gchar *host;
-  const gchar *group;
-  GBytes *payload;
-  GList *list, *l;
 
-  if (!cockpit_json_get_string (options, "host", NULL, &host) ||
-      !cockpit_json_get_string (options, "group", NULL, &group))
+  if (!cockpit_json_get_string (options, "host", NULL, &host))
     {
       g_warning ("%s: received invalid kill command", socket->id);
       return FALSE;
     }
 
-  list = NULL;
-  g_hash_table_iter_init (&iter, socket->channels);
-  while (g_hash_table_iter_next (&iter, &channel, NULL))
+  if (host)
     {
-      if (host)
-        {
-          session = cockpit_session_by_channel (&self->sessions, channel);
-          if (!session || !g_str_equal (host, session->host))
-            continue;
-        }
-      if (group)
-        {
-          if (g_strcmp0 (g_hash_table_lookup (self->channel_groups, channel), group) != 0)
-            continue;
-        }
-
-      list = g_list_prepend (list, g_strdup (channel));
+      session = cockpit_session_by_host (&self->sessions, host);
+      if (session && !session->sent_done)
+        cockpit_transport_send (session->transport, NULL, payload);
     }
-
-  for (l = list; l != NULL; l = g_list_next (l))
+  else
     {
-      channel = l->data;
+      g_hash_table_iter_init (&iter, self->sessions.by_host);
+      while (g_hash_table_iter_next (&iter, NULL, (gpointer *)&session))
+        {
+          if (!session->sent_done)
+            cockpit_transport_send (session->transport, NULL, payload);
+        }
+    }
+  return TRUE;
+}
 
-      g_debug ("%s killing channel: %s", socket->id, (gchar *)channel);
+static void
+send_socket_hints (CockpitWebService *self,
+                   const gchar *name,
+                   const gchar *value)
+{
+  CockpitSocket *socket;
+  GHashTableIter iter;
+  GBytes *payload;
 
-      /* Send a close message to both parties */
-      payload = cockpit_transport_build_control ("command", "close",
-                                                 "channel", (gchar *)channel,
-                                                 "problem", "terminated",
-                                                 NULL);
-      g_warn_if_fail (process_and_relay_close (self, socket, channel, payload));
+  payload = cockpit_transport_build_control ("command", "hint", name, value, NULL);
+  g_hash_table_iter_init (&iter, self->sockets.by_connection);
+  while (g_hash_table_iter_next (&iter, NULL, (gpointer *)&socket))
+    {
       if (web_socket_connection_get_ready_state (socket->connection) == WEB_SOCKET_STATE_OPEN)
         {
-              web_socket_connection_send (socket->connection,
-                                          WEB_SOCKET_DATA_TEXT,
-                                          self->control_prefix,
-                                          payload);
+              web_socket_connection_send (socket->connection, WEB_SOCKET_DATA_TEXT,
+                                          self->control_prefix, payload);
+        }
+    }
+  g_bytes_unref (payload);
+}
+
+static gboolean
+process_socket_authorize (CockpitWebService *self,
+                          CockpitSocket *socket,
+                          const gchar *channel,
+                          JsonObject *options,
+                          GBytes *payload)
+{
+  const gchar *credential = NULL;
+  CockpitSession *session = NULL;
+  const gchar *string = NULL;
+  GBytes *password;
+  gpointer data;
+  gsize length;
+
+  if (!cockpit_json_get_string (options, "credential", NULL, &credential))
+    {
+      g_warning ("%s: received invalid authorize command", socket->id);
+      return FALSE;
+    }
+  else if (!credential)
+    {
+      g_warning ("%s: unknown or unsupported authorize command", socket->id);
+    }
+  else if (g_str_equal (credential, "password"))
+    {
+      if (!cockpit_json_get_string (options, "password", NULL, &string))
+        {
+          g_warning ("%s: received invalid \"password\" field in \"authorize\" command", socket->id);
+          return FALSE;
         }
 
-      g_bytes_unref (payload);
+      if (string == NULL)
+        {
+          send_socket_hints (self, "credential", "clear");
+          password = NULL;
+        }
+      else
+        {
+          send_socket_hints (self, "credential", "password");
+          password = g_bytes_new_with_free_func (string, strlen (string),
+                                                 (GDestroyNotify)json_object_unref,
+                                                 json_object_ref (options));
+        }
 
-      g_free (channel);
+      cockpit_creds_set_password (self->creds, password);
+
+      /* Clear out the payload memory */
+      if (password)
+        {
+          data = (gpointer)g_bytes_get_data (payload, &length);
+          cockpit_secclear (data, length);
+          g_bytes_unref (password);
+        }
+    }
+  else if (g_str_equal (credential, "inject"))
+    {
+      if (channel)
+        session = cockpit_session_by_channel (&self->sessions, channel);
+      if (!session)
+        {
+          g_message ("%s: channel to inject password credentials does not exist: %s",
+                     socket->id, channel ? channel : "");
+        }
+      else if (!session->sent_done)
+        {
+          password = cockpit_creds_get_password (self->creds);
+          if (password)
+            g_bytes_ref (password);
+          else
+            password = g_bytes_new_static ("", 0);
+          cockpit_transport_send (session->transport, channel, password);
+          g_bytes_unref (password);
+        }
+    }
+  else
+    {
+      g_warning ("%s: unsupported authorize command credential: %s", socket->id, credential);
     }
 
-  g_list_free (list);
   return TRUE;
 }
 
 static gboolean
-process_authorize (CockpitWebService *self,
-                   CockpitSession *session,
-                   JsonObject *options)
+process_session_authorize (CockpitWebService *self,
+                           CockpitSession *session,
+                           JsonObject *options)
 {
   const gchar *cookie = NULL;
   GBytes *payload;
@@ -651,37 +719,44 @@ process_authorize (CockpitWebService *self,
   char *response = NULL;
   const gchar *challenge;
   const gchar *password;
-  gboolean ret = FALSE;
+  GBytes *data;
   int rc;
 
   host = session->host;
 
   if (!cockpit_json_get_string (options, "challenge", NULL, &challenge) ||
-      !cockpit_json_get_string (options, "cookie", NULL, &cookie) ||
-      challenge == NULL ||
-      reauthorize_type (challenge, &type) < 0 ||
-      reauthorize_user (challenge, &user) < 0)
+      !cockpit_json_get_string (options, "cookie", NULL, &cookie))
     {
       g_warning ("%s: received invalid authorize command", host);
-      goto out;
+      return FALSE;
     }
 
-  if (!g_str_equal (cockpit_creds_get_user (session->creds), user))
+  if (!challenge || !cookie)
     {
-      g_warning ("%s: received authorize command for wrong user: %s", host, user);
+      g_message ("%s: unsupported or unknown authorize command", host);
+    }
+  else if (reauthorize_type (challenge, &type) < 0 ||
+           reauthorize_user (challenge, &user) < 0)
+    {
+      g_message ("%s: received invalid authorize challenge command", host);
+    }
+  else if (!g_str_equal (cockpit_creds_get_user (session->creds), user))
+    {
+      g_message ("%s: received authorize command for wrong user: %s", host, user);
     }
   else if (g_str_equal (type, "crypt1"))
     {
-      password = cockpit_creds_get_password (session->creds);
-      if (!password)
+      data = cockpit_creds_get_password (session->creds);
+      if (!data)
         {
           g_debug ("%s: received authorize crypt1 challenge, but no password to reauthenticate", host);
         }
       else
         {
+          password = g_bytes_get_data (data, NULL);
           rc = reauthorize_crypt1 (challenge, password, &response);
           if (rc < 0)
-            g_warning ("%s: failed to reauthorize crypt1 challenge", host);
+            g_message ("%s: failed to reauthorize crypt1 challenge", host);
         }
     }
 
@@ -702,13 +777,11 @@ process_authorize (CockpitWebService *self,
       cockpit_transport_send (session->transport, NULL, payload);
       g_bytes_unref (payload);
     }
-  ret = TRUE;
 
-out:
   free (user);
   free (type);
   free (response);
-  return ret;
+  return TRUE;
 }
 
 static const gchar *
@@ -785,7 +858,7 @@ on_session_control (CockpitTransport *transport,
         }
       else if (g_strcmp0 (command, "authorize") == 0)
         {
-          valid = process_authorize (self, session, options);
+          valid = process_session_authorize (self, session, options);
         }
       else if (g_strcmp0 (command, "ping") == 0)
         {
@@ -1062,16 +1135,30 @@ lookup_or_open_session (CockpitWebService *self,
 
   const gchar *host_key = NULL;
   const gchar *host = NULL;
+  const gchar *sharable = NULL;
   const gchar *specific_user;
   const gchar *creds_user;
   const gchar *password;
-  gboolean private;
+  GBytes *bytes;
+  gboolean private = FALSE;
   gboolean new_creds = FALSE;
 
   if (!cockpit_json_get_string (options, "host", "localhost", &host))
     host = "localhost";
   if (host == NULL || g_strcmp0 (host, "") == 0)
     host = "localhost";
+
+  if (!cockpit_json_get_string (options, "password", NULL, &password))
+    password = NULL;
+
+  if (cockpit_json_get_string (options, "user", NULL, &specific_user))
+    {
+      if (g_strcmp0 (specific_user, "") == 0)
+        specific_user = NULL;
+    }
+
+  if (!cockpit_json_get_string (options, "host-key", NULL, &host_key))
+    host_key = NULL;
 
   /*
    * Some sessions shouldn't be shared by multiple channels, such as those that
@@ -1083,26 +1170,20 @@ lookup_or_open_session (CockpitWebService *self,
    *
    * This means the session doesn't show up in the by_host table.
    */
-  private = FALSE;
-
-  if (!cockpit_json_get_string (options, "password", NULL, &password))
-    password = NULL;
-
-  if (cockpit_json_get_string (options, "user", NULL, &specific_user)
-      && specific_user && !g_str_equal (specific_user, ""))
+  if (!cockpit_json_get_string (options, "session", NULL, &sharable))
+    sharable = NULL;
+  if (!sharable)
     {
-      /* Forcing a user means a private session, unless otherwise specified */
-      if (!cockpit_json_get_bool (options, "temp-session", TRUE, &private))
+      /* Fallback to older ways of indicating this */
+      if (specific_user || host_key)
+        private = TRUE;
+      if (private && !cockpit_json_get_bool (options, "temp-session", TRUE, &private))
         private = TRUE;
     }
-
-  if (!cockpit_json_get_string (options, "host-key", NULL, &host_key))
-    host_key = NULL;
-
-  /* Forcing a host-key means a private session, unless otherwise specified */
-  if (host_key && !cockpit_json_get_bool (options, "temp-session",
-                                          TRUE, &private))
-    private = TRUE;
+  else if (g_str_equal (sharable, "private"))
+    {
+      private = TRUE;
+    }
 
   if (!private)
     session = cockpit_session_by_host (&self->sessions, host);
@@ -1121,11 +1202,15 @@ lookup_or_open_session (CockpitWebService *self,
 
       if (new_creds)
         {
+          bytes = NULL;
+          if (password)
+            bytes = g_bytes_new_take (g_strdup (password), strlen (password));
           creds = cockpit_creds_new (specific_user != NULL ? specific_user : username,
                                      cockpit_creds_get_application (self->creds),
-                                     COCKPIT_CRED_PASSWORD, password,
+                                     COCKPIT_CRED_PASSWORD, bytes,
                                      COCKPIT_CRED_RHOST, cockpit_creds_get_rhost (self->creds),
                                      NULL);
+          g_bytes_unref (bytes);
         }
       else
         {
@@ -1285,7 +1370,6 @@ process_and_relay_open (CockpitWebService *self,
 {
   WebSocketDataType data_type = WEB_SOCKET_DATA_TEXT;
   CockpitSession *session = NULL;
-  const gchar *group;
   GBytes *payload;
 
   if (self->closing)
@@ -1300,12 +1384,6 @@ process_and_relay_open (CockpitWebService *self,
       return FALSE;
     }
 
-  if (!cockpit_json_get_string (options, "group", NULL, &group))
-    {
-      g_warning ("received open command with invalid group");
-      return FALSE;
-    }
-
   if (!cockpit_web_service_parse_binary (options, &data_type))
     return FALSE;
 
@@ -1314,8 +1392,6 @@ process_and_relay_open (CockpitWebService *self,
   cockpit_session_add_channel (&self->sessions, session, channel);
   if (socket)
     cockpit_socket_add_channel (&self->sockets, socket, channel, data_type);
-  if (group)
-    g_hash_table_insert (self->channel_groups, g_strdup (channel), g_strdup (group));
 
   if (!session->sent_done)
     {
@@ -1354,6 +1430,7 @@ process_logout (CockpitWebService *self,
     {
       g_info ("Deauthorizing user %s",
               cockpit_creds_get_rhost (self->creds));
+      send_socket_hints (self, "credential", "clear");
     }
 
   return TRUE;
@@ -1442,6 +1519,10 @@ dispatch_inbound_command (CockpitWebService *self,
     {
       valid = process_and_relay_open (self, socket, channel, options);
     }
+  else if (g_strcmp0 (command, "authorize") == 0)
+    {
+      valid = process_socket_authorize (self, socket, channel, options, payload);
+    }
   else if (g_strcmp0 (command, "logout") == 0)
     {
       valid = process_logout (self, options);
@@ -1470,8 +1551,7 @@ dispatch_inbound_command (CockpitWebService *self,
     }
   else if (g_strcmp0 (command, "kill") == 0)
     {
-      /* This command is never forwarded */
-      valid = process_kill (self, socket, options);
+      valid = process_kill (self, socket, options, payload);
     }
   else if (channel)
     {
@@ -1565,6 +1645,7 @@ on_web_socket_open (WebSocketConnection *connection,
   json_array_add_string_element (capabilities, "connection-string");
   json_array_add_string_element (capabilities, "auth-method-results");
   json_array_add_string_element (capabilities, "multi");
+  json_array_add_string_element (capabilities, "credentials");
 
   if (web_socket_connection_get_flavor (connection) == WEB_SOCKET_FLAVOR_RFC6455)
     {
@@ -1582,6 +1663,10 @@ on_web_socket_open (WebSocketConnection *connection,
 
   web_socket_connection_send (connection, WEB_SOCKET_DATA_TEXT, self->control_prefix, command);
   g_bytes_unref (command);
+
+  /* Do we have an authorize password? if so tell the frontend */
+  if (cockpit_creds_get_password (self->creds))
+    send_socket_hints (self, "credential", "password");
 
   g_signal_connect (connection, "message",
                     G_CALLBACK (on_web_socket_message), self);
@@ -1675,7 +1760,6 @@ cockpit_web_service_init (CockpitWebService *self)
   cockpit_sessions_init (&self->sessions);
   cockpit_sockets_init (&self->sockets);
   self->ping_timeout = g_timeout_add_seconds (cockpit_ws_ping_interval, on_ping_time, self);
-  self->channel_groups = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
 }
 
 static void

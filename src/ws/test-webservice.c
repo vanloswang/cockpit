@@ -86,6 +86,7 @@ typedef struct {
   const char *origin;
   const char *config;
   const char *forward;
+  const char *bridge;
 } TestFixture;
 
 static GString *
@@ -212,6 +213,7 @@ setup_mock_webserver (TestCase *test,
 {
   GError *error = NULL;
   const gchar *user;
+  GBytes *password;
 
   /* Zero port makes server choose its own */
   test->web_server = cockpit_web_server_new (NULL, 0, NULL, NULL, &error);
@@ -220,10 +222,12 @@ setup_mock_webserver (TestCase *test,
   user = g_get_user_name ();
   test->auth = mock_auth_new (user, PASSWORD);
 
+  password = g_bytes_new_take (g_strdup (PASSWORD), strlen (PASSWORD));
   test->creds = cockpit_creds_new (user, "cockpit",
-                                   COCKPIT_CRED_PASSWORD, PASSWORD,
+                                   COCKPIT_CRED_PASSWORD, password,
                                    COCKPIT_CRED_CSRF_TOKEN, "my-csrf-token",
                                    NULL);
+  g_bytes_unref (password);
 }
 
 static void
@@ -241,6 +245,7 @@ static void
 setup_io_streams (TestCase *test,
                   gconstpointer data)
 {
+  const TestFixture *fixture = data;
   GSocket *socket1, *socket2;
   GError *error = NULL;
   int fds[2];
@@ -260,7 +265,10 @@ setup_io_streams (TestCase *test,
   g_object_unref (socket1);
   g_object_unref (socket2);
 
-  cockpit_ws_bridge_program = BUILDDIR "/mock-echo";
+  if (fixture && fixture->bridge)
+    cockpit_ws_bridge_program = fixture->bridge;
+  else
+    cockpit_ws_bridge_program = BUILDDIR "/mock-echo";
 }
 
 static void
@@ -522,7 +530,7 @@ start_web_service_and_connect_client (TestCase *test,
 
   /* Send the open control message that starts the bridge. */
   send_control_message (*ws, "init", NULL, BUILD_INTS, "version", 1, NULL);
-  send_control_message (*ws, "open", "4", "payload", "test-text", NULL);
+  send_control_message (*ws, "open", "4", "payload", "echo", NULL);
 
   /* This message should be echoed */
   message = g_bytes_new ("4\ntest", 6);
@@ -598,6 +606,27 @@ on_message_get_non_control (WebSocketConnection *ws,
   g_assert (*received == NULL);
   *received = g_bytes_ref (message);
 }
+
+static void
+on_message_get_control (WebSocketConnection *ws,
+                        WebSocketDataType type,
+                        GBytes *message,
+                        gpointer user_data)
+{
+  JsonObject **received = user_data;
+  GError *error = NULL;
+
+  g_assert_cmpint (type, ==, WEB_SOCKET_DATA_TEXT);
+
+  /* Control messages have this prefix: ie: a zero channel */
+  if (g_str_has_prefix (g_bytes_get_data (message, NULL), "\n"))
+    {
+      g_assert (*received == NULL);
+      *received = cockpit_json_parse_bytes (message, &error);
+      g_assert_no_error (error);
+    }
+}
+
 
 static void
 test_handshake_and_echo (TestCase *test,
@@ -709,7 +738,12 @@ test_close_error (TestCase *test,
   g_bytes_unref (received);
   received = NULL;
 
-  /* Silly test echos the "open" message */
+  WAIT_UNTIL (received != NULL);
+  expect_control_message (received, "hint", NULL, NULL);
+  g_bytes_unref (received);
+  received = NULL;
+
+ /* Silly test echos the "open" message */
   WAIT_UNTIL (received != NULL);
   expect_control_message (received, "open", "4", NULL);
   g_bytes_unref (received);
@@ -760,6 +794,13 @@ test_no_init (TestCase *test,
   g_bytes_unref (received);
   received = NULL;
 
+  /* A hint from the other end */
+  while (received == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  expect_control_message (received, "hint", NULL, NULL);
+  g_bytes_unref (received);
+  received = NULL;
+
   /* We should now get a failure */
   while (received == NULL)
     g_main_context_iteration (NULL, TRUE);
@@ -797,6 +838,13 @@ test_wrong_init_version (TestCase *test,
   g_bytes_unref (received);
   received = NULL;
 
+  /* A hint from the other end */
+  while (received == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  expect_control_message (received, "hint", NULL, NULL);
+  g_bytes_unref (received);
+  received = NULL;
+
   /* We should now get a failure */
   while (received == NULL)
     g_main_context_iteration (NULL, TRUE);
@@ -831,6 +879,13 @@ test_bad_init_version (TestCase *test,
   while (received == NULL)
     g_main_context_iteration (NULL, TRUE);
   expect_control_message (received, "init", NULL, NULL);
+  g_bytes_unref (received);
+  received = NULL;
+
+  /* A hint from the other end */
+  while (received == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  expect_control_message (received, "hint", NULL, NULL);
   g_bytes_unref (received);
   received = NULL;
 
@@ -939,6 +994,12 @@ test_user_host_fail (TestCase *test,
   while (received == NULL)
     g_main_context_iteration (NULL, TRUE);
   expect_control_message (received, "init", NULL, NULL);
+  g_bytes_unref (received);
+  received = NULL;
+
+  while (received == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  expect_control_message (received, "hint", NULL, NULL);
   g_bytes_unref (received);
   received = NULL;
 
@@ -1064,6 +1125,12 @@ test_specified_creds_fail (TestCase *test,
   g_bytes_unref (received);
   received = NULL;
 
+  while (received == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  expect_control_message (received, "hint", NULL, NULL);
+  g_bytes_unref (received);
+  received = NULL;
+
   /* We should now get a close command */
   WAIT_UNTIL (received != NULL);
 
@@ -1129,6 +1196,13 @@ test_unknown_host_key (TestCase *test,
   while (received == NULL)
     g_main_context_iteration (NULL, TRUE);
   expect_control_message (received, "init", NULL, NULL);
+  g_bytes_unref (received);
+  received = NULL;
+
+  /* Should get a hint message */
+  while (received == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  expect_control_message (received, "hint", NULL, NULL);
   g_bytes_unref (received);
   received = NULL;
 
@@ -1395,6 +1469,13 @@ test_auth_results (TestCase *test,
   g_bytes_unref (received);
   received = NULL;
 
+  /* A hint from the other end */
+  while (received == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  expect_control_message (received, "hint", NULL, NULL);
+  g_bytes_unref (received);
+  received = NULL;
+
   /* Channel should close immediately */
   WAIT_UNTIL (received != NULL);
 
@@ -1452,6 +1533,12 @@ test_fail_spawn (TestCase *test,
   g_bytes_unref (received);
   received = NULL;
 
+  while (received == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  expect_control_message (received, "hint", NULL, NULL);
+  g_bytes_unref (received);
+  received = NULL;
+
   /* Channel should close immediately */
   WAIT_UNTIL (received != NULL);
 
@@ -1461,6 +1548,10 @@ test_fail_spawn (TestCase *test,
 
   close_client_and_stop_web_service (test, ws, service);
 }
+
+static const TestFixture fixture_kill_group = {
+    .bridge = BUILDDIR "/cockpit-bridge"
+};
 
 static void
 test_kill_group (TestCase *test,
@@ -1521,7 +1612,7 @@ test_kill_group (TestCase *test,
       g_assert (cockpit_transport_parse_command (payload, &command, &channel, &options));
       g_bytes_unref (payload);
 
-      if (!g_str_equal (command, "open"))
+      if (!g_str_equal (command, "open") && !g_str_equal (command, "ready"))
         {
           g_assert_cmpstr (command, ==, "close");
           g_assert_cmpstr (json_object_get_string_member (options, "problem"), ==, "terminated");
@@ -1606,7 +1697,7 @@ test_kill_host (TestCase *test,
       g_assert (cockpit_transport_parse_command (payload, &command, &channel, &options));
       g_bytes_unref (payload);
 
-      if (!g_str_equal (command, "open"))
+      if (!g_str_equal (command, "open") && !g_str_equal (command, "ready"))
         {
           g_assert_cmpstr (command, ==, "close");
           g_assert_cmpstr (json_object_get_string_member (options, "problem"), ==, "terminated");
@@ -1662,6 +1753,12 @@ test_timeout_session (TestCase *test,
   while (received == NULL)
     g_main_context_iteration (NULL, TRUE);
   expect_control_message (received, "init", NULL, NULL);
+  g_bytes_unref (received);
+  received = NULL;
+
+  while (received == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  expect_control_message (received, "hint", NULL, NULL);
   g_bytes_unref (received);
   received = NULL;
 
@@ -1827,6 +1924,167 @@ test_logout (TestCase *test,
 
   while (web_socket_connection_get_ready_state (ws) != WEB_SOCKET_STATE_CLOSED)
     g_main_context_iteration (NULL, TRUE);
+
+  close_client_and_stop_web_service (test, ws, service);
+}
+
+static void
+test_hint_credential (TestCase *test,
+                      gconstpointer data)
+{
+  WebSocketConnection *ws;
+  JsonObject *received = NULL;
+  CockpitWebService *service;
+  GBytes *message = NULL;
+
+  start_web_service_and_create_client (test, data, &ws, &service);
+  WAIT_UNTIL (web_socket_connection_get_ready_state (ws) != WEB_SOCKET_STATE_CONNECTING);
+  g_assert (web_socket_connection_get_ready_state (ws) == WEB_SOCKET_STATE_OPEN);
+
+  /* Send the logout control message */
+  send_control_message (ws, "init", NULL, BUILD_INTS, "version", 1, NULL);
+
+
+  g_signal_connect (ws, "message", G_CALLBACK (on_message_get_control), &received);
+
+  /* First an init message */
+  while (received == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  g_assert_cmpstr (json_object_get_string_member (received, "command"), ==, "init");
+  json_object_unref (received);
+  received = NULL;
+
+  /* Then a hint that we have a password */
+  while (received == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  cockpit_assert_json_eq (received, "{\"command\":\"hint\",\"credential\":\"password\"}");
+  json_object_unref (received);
+  received = NULL;
+
+  /* Now drop privileges */
+  data = "\n{ \"command\": \"logout\", \"disconnect\": false }";
+  message = g_bytes_new_static (data, strlen (data));
+  web_socket_connection_send (ws, WEB_SOCKET_DATA_TEXT, NULL, message);
+  g_bytes_unref (message);
+
+  /* We should now get a hint that we have no password */
+  while (received == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  cockpit_assert_json_eq (received, "{\"command\":\"hint\",\"credential\":\"clear\"}");
+  json_object_unref (received);
+
+  close_client_and_stop_web_service (test, ws, service);
+}
+
+static void
+test_authorize_password (TestCase *test,
+                         gconstpointer data)
+{
+  WebSocketConnection *ws;
+  JsonObject *control = NULL;
+  CockpitWebService *service;
+  GBytes *payload = NULL;
+  gconstpointer content;
+  gchar *password;
+  gsize length;
+  gulong handler1;
+  gulong handler2;
+
+  start_web_service_and_create_client (test, data, &ws, &service);
+  WAIT_UNTIL (web_socket_connection_get_ready_state (ws) != WEB_SOCKET_STATE_CONNECTING);
+  g_assert (web_socket_connection_get_ready_state (ws) == WEB_SOCKET_STATE_OPEN);
+
+  /* Send the logout control message */
+  send_control_message (ws, "init", NULL, BUILD_INTS, "version", 1, NULL);
+  send_control_message (ws, "open", "444", "payload", "echo", NULL);
+
+  handler1 = g_signal_connect (ws, "message", G_CALLBACK (on_message_get_control), &control);
+  handler2 = g_signal_connect (ws, "message", G_CALLBACK (on_message_get_non_control), &payload);
+
+  /* First an init message */
+  while (control == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  g_assert_cmpstr (json_object_get_string_member (control, "command"), ==, "init");
+  json_object_unref (control);
+  control = NULL;
+
+  /* Then a hint that we have a password */
+  while (control == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  cockpit_assert_json_eq (control, "{\"command\":\"hint\",\"credential\":\"password\"}");
+  json_object_unref (control);
+  control = NULL;
+
+  /* Then a message that echo channel is open */
+  while (control == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  cockpit_assert_json_eq (control, "{\"command\":\"open\",\"channel\":\"444\",\"payload\":\"echo\"}");
+  json_object_unref (control);
+  control = NULL;
+
+  /* Ask for that password to be injected in a channel */
+  send_control_message (ws, "authorize", "444", "credential", "inject", NULL);
+
+  /* We should receive the password on the channel */
+  while (payload == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  content = g_bytes_get_data (payload, &length);
+  password = g_strndup (content, length);
+  g_assert_cmpstr (password, ==, "444\nthis is the password");
+  g_free (password);
+  g_bytes_unref (payload);
+  payload = NULL;
+
+  /* Now set a new password and then ask for that to be injected */
+  send_control_message (ws, "authorize", NULL, "credential", "password", "password", "marmalade", NULL);
+  send_control_message (ws, "authorize", "444", "credential", "inject", NULL);
+
+  /* We should now get a hint that we have no password */
+  while (control == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  cockpit_assert_json_eq (control, "{\"command\":\"hint\",\"credential\":\"password\"}");
+  json_object_unref (control);
+  control = NULL;
+
+  /* We should now receive the password on the channel */
+  while (payload == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  content = g_bytes_get_data (payload, &length);
+  password = g_strndup (content, length);
+  g_assert_cmpstr (password, ==, "444\nmarmalade");
+  g_free (password);
+  g_bytes_unref (payload);
+  payload = NULL;
+
+  /* Now clear the password */
+  send_control_message (ws, "authorize", NULL, "credential", "password", NULL);
+  send_control_message (ws, "authorize", "444", "credential", "inject", NULL);
+
+  /* We should now get a hint that we have no password */
+  while (control == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  cockpit_assert_json_eq (control, "{\"command\":\"hint\",\"credential\":\"clear\"}");
+  json_object_unref (control);
+  control = NULL;
+
+  /* Inject the password on the channel */
+  send_control_message (ws, "authorize", "444", "credential", "inject", NULL);
+
+  /* We should get a zero length message */
+  while (payload == NULL)
+    g_main_context_iteration (NULL, TRUE);
+  content = g_bytes_get_data (payload, &length);
+  password = g_strndup (content, length);
+  g_assert_cmpstr (password, ==, "444\n");
+  g_free (password);
+  g_bytes_unref (payload);
+  payload = NULL;
+
+  g_signal_handler_disconnect (ws, handler1);
+  g_signal_handler_disconnect (ws, handler2);
+
+  if (control != NULL)
+    json_object_unref (control);
 
   close_client_and_stop_web_service (test, ws, service);
 }
@@ -2038,9 +2296,9 @@ main (int argc,
               &fixture_hixie76, setup_for_socket,
               test_fail_spawn, teardown_for_socket);
 
-  g_test_add ("/web-service/kill-group", TestCase, &fixture_rfc6455,
+  g_test_add ("/web-service/kill-group", TestCase, &fixture_kill_group,
               setup_for_socket, test_kill_group, teardown_for_socket);
-  g_test_add ("/web-service/kill-host", TestCase, &fixture_rfc6455,
+  g_test_add ("/web-service/kill-host", TestCase, &fixture_kill_group,
               setup_for_socket, test_kill_host, teardown_for_socket);
 
   g_test_add ("/web-service/specified-creds", TestCase,
@@ -2070,6 +2328,11 @@ main (int argc,
               setup_for_socket, test_dispose, teardown_for_socket);
   g_test_add ("/web-service/logout", TestCase, NULL,
               setup_for_socket, test_logout, teardown_for_socket);
+
+  g_test_add ("/web-service/authorize/hint", TestCase, NULL,
+              setup_for_socket, test_hint_credential, teardown_for_socket);
+  g_test_add ("/web-service/authorize/password", TestCase, NULL,
+              setup_for_socket, test_authorize_password, teardown_for_socket);
 
   g_test_add_func ("/web-service/parse-external/success", test_parse_external);
   for (i = 0; i < G_N_ELEMENTS (external_failure_fixtures); i++)

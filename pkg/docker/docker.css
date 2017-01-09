@@ -1,3 +1,23 @@
+
+.listing-ct-body-header {
+    margin-bottom: 1.5em;
+}
+
+.listing-ct-item .pficon {
+    position: relative;
+    top: 3px;
+    right: 3px;
+    font-size: 16px;
+}
+
+.vulnerability-row-ct-docker {
+    line-height: 2.5em;
+}
+
+.vulnerability-row-ct-docker:not(:last-child) {
+    border-bottom: 1px solid #BABABA;
+}
+
 /* For table rows containing interactive controls like bars */
 .info-table-ct tr.interactive td {
     line-height: 26px;
@@ -9,6 +29,10 @@
 .form-table-ct .shrink {
     white-space: nowrap;
     width: 5px;
+}
+
+div.spinner {
+    display: inline-block;
 }
 
 /*
@@ -280,13 +304,6 @@
     height: 120px;
 }
 
-/* Display properly when there are several tags */
-#image-details .panel-heading {
-    min-height: 44px;
-    height: auto;
-}
-
-#image-details .panel-heading .pull-right,
 #container-details .panel-heading .pull-right {
     height: 25px;
 }
@@ -588,4 +605,9 @@ table.drive-list td:nth-child(2) img {
     padding-left: 32px;
     padding-top: 1em;
     color: #888;
+}
+
+#image-details .listing-ct-inline {
+    padding-left: 20px;
+    padding-right: 20px;
 }

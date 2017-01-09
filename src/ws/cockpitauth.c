@@ -143,6 +143,7 @@ typedef struct {
   GBytes *authorization;
 
   const gchar *auth_type;
+  gboolean authorize_password;
 
   gint refs;
 
@@ -369,7 +370,7 @@ clear_free_authorization (gpointer data)
   g_free (data);
 }
 
-static const gchar *
+static GBytes *
 parse_basic_auth_password (GBytes *input,
                            gchar **user)
 {
@@ -386,8 +387,14 @@ parse_basic_auth_password (GBytes *input,
         *user = g_strndup (data, password - data);
       password++;
     }
+  else
+    {
+      return NULL;
+    }
 
-  return password;
+  return g_bytes_new_with_free_func (password, strlen (password),
+                                     (GDestroyNotify)g_bytes_unref,
+                                     g_bytes_ref (input));
 }
 
 GBytes *
@@ -591,7 +598,7 @@ create_creds_for_spawn_authenticated (CockpitAuth *self,
                                       JsonObject *results,
                                       const gchar *raw_data)
 {
-  const gchar *password = NULL;
+  GBytes *password = NULL;
   const gchar *gssapi_creds = NULL;
   CockpitCreds *creds = NULL;
   gchar *csrf_token;
@@ -601,7 +608,7 @@ create_creds_for_spawn_authenticated (CockpitAuth *self,
    * passing it back and forth possibly leaking it.
    */
 
-  if (g_str_equal (ad->auth_type, "basic"))
+  if (ad->authorize_password && g_str_equal (ad->auth_type, "basic"))
     password = parse_basic_auth_password (ad->authorization, NULL);
 
   if (!cockpit_json_get_string (results, "gssapi-creds", NULL, &gssapi_creds))
@@ -620,6 +627,9 @@ create_creds_for_spawn_authenticated (CockpitAuth *self,
                              COCKPIT_CRED_GSSAPI, gssapi_creds,
                              COCKPIT_CRED_CSRF_TOKEN, csrf_token,
                              NULL);
+
+  if (password)
+    g_bytes_unref (password);
 
   g_free (csrf_token);
   return creds;
@@ -830,6 +840,7 @@ cockpit_auth_spawn_login_async (CockpitAuth *self,
   const gchar *host;
   const gchar *command;
   const gchar *conversation;
+  const gchar *authorized;
 
   gchar *application = NULL;
   gchar *remote_peer = get_remote_address (connection);
@@ -891,6 +902,12 @@ cockpit_auth_spawn_login_async (CockpitAuth *self,
   ad->auth_type = type;
   ad->authorization = g_bytes_ref (authorization);
   ad->application = g_strdup (application);
+
+  /* Hang onto the password in credentials if requested */
+  authorized = g_hash_table_lookup (headers, "X-Authorize");
+  if (!authorized)
+    authorized = "";
+  ad->authorize_password = (strstr (authorized, "password") != NULL);
 
   if (g_strcmp0 (section, SSH_SECTION) == 0)
     {

@@ -89,7 +89,7 @@ class TestConnection(MachineCase):
         b.enter_page("/system")
 
         # Reauthorization can fail due to disconnects above
-        self.allow_journal_messages("cockpit-polkit: user admin reauthorization failed")
+        self.allow_authorize_journal_messages()
         self.allow_restart_journal_messages()
 
         # Debian 8 doesn't have systemd with coredump support
@@ -99,12 +99,15 @@ class TestConnection(MachineCase):
         # Lets crash a process and see if we get a proper backtrace in the logs
         # This helps with debugging failures in the tests elsewhere
         if m.image in ["debian-unstable", "ubuntu-1604"]:
-            cron = "cron"
+            binary = "cron"
+            m.execute("systemctl start cron")
+        elif m.image in ["fedora-atomic"]:
+            binary = "agetty"
         else:
-            cron = "crond"
-        m.execute("systemctl start {0}".format(cron))
-        m.execute("kill -SEGV $(pgrep {0})".format(cron))
-        wait(lambda: m.execute("journalctl -b | grep 'Process.*cron.*of user.*dumped core.'"))
+            binary = "crond"
+            m.execute("systemctl start crond")
+        m.execute("kill -SEGV $(pgrep {0})".format(binary))
+        wait(lambda: m.execute("journalctl -b | grep 'Process.*{0}.*of user.*dumped core.'".format(binary)))
 
         # Make sure the core dumps exist in the directory, so we can download them
         cores = m.execute("find /var/lib/systemd/coredump -type f")
@@ -219,9 +222,7 @@ class TestConnection(MachineCase):
         m.execute("XDG_CONFIG_DIRS=/test XDG_DATA_DIRS=/test {} --port 9000 --address 127.0.0.1 0<&- &>/dev/null &".format(executable))
 
         # The port may not be available immediately, so wait for it
-        wait(lambda: 'Custom Default Root' in m.execute('curl -s -k https://localhost:9000/'))
-        output = m.execute('curl -s -k https://localhost:9000/')
-        self.assertIn('A Custom Title', output)
+        wait(lambda: 'A Custom Title' in m.execute('curl -s -k https://localhost:9000/'))
 
         output = m.execute('curl -s -S -k https://{}:9000/ 2>&1 || true'.format(m.address))
         self.assertIn('Connection refused', output)

@@ -19,12 +19,12 @@ On Debian or Ubuntu:
 On Fedora:
 
     $ sudo yum install nodejs npm
-    $ sudo npm install -g webpack
 
 And lastly get Webpack and the development dependencies:
 
     $ sudo npm install -g webpack
     $ npm install
+    $ ./node_modules/bower/bin/bower install
 
 ## Working on Cockpit using Vagrant
 
@@ -158,8 +158,6 @@ In addition for testing the following dependencies are required:
     $ sudo yum install python-libguestfs qemu mock qemu-kvm rpm-build \
          curl libvirt-client libvirt-python libvirt python-lxml \
          krb5-workstation krb5-server selinux-policy-devel
-
-    $ npm install phantomjs-prebuilt
 
 Cockpit uses the autotools and thus there are the familiar `./configure`
 script and the familar Makefile targets.

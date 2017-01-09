@@ -40,11 +40,18 @@ KEY_ID = "95A8BA1754D0E95E2B3A98A7EE15015654780CBD"
 def start_trivial_httpd(m):
     remote = m.execute("ostree remote show-url local")
     parts = remote.strip().split(":")
+    port = parts[-1]
 
-    # If ostree supports rpm-ostreed then it support the -P option
-    args = [parts[-1], REPO_LOCATION]
-    m.execute("ostree trivial-httpd -d -P {0} {1} ".format(*args))
+    script = "cd {0}\nsetsid python -m SimpleHTTPServer {1} >/dev/null 2>&1 < /dev/null &\necho $!".format(REPO_LOCATION, port)
+    result = m.execute(script=script,
+                       environment={"PYTHONUNBUFFERED" : "1"})
 
+    m.wait_for_cockpit_running(port=port)
+    return result.strip()
+
+def stop_trivial_httpd(m, pid):
+    if pid:
+        m.execute(["kill", pid])
 
 def generate_new_commit(m, pkg_to_remove):
     # Make one change of each type to a new rpm tree
@@ -120,9 +127,6 @@ class OstreeRestartCase(MachineCase):
         m.execute("systemctl disable rhsmcertd || true")
         m.execute("systemctl stop rhsmcertd || true")
 
-        # Require signatures
-        m.execute("sed -i /gpg-verify/d /etc/ostree/remotes.d/local.conf")
-
         cockpit_shell = m.execute("rpm -qa | grep cockpit-ostree").strip()
         cockpit_machines = m.execute("rpm -qa | grep cockpit-machines").strip()
 
@@ -138,6 +142,7 @@ class OstreeRestartCase(MachineCase):
 
         # Check current and rollback target
         b.wait_present('table.listing-ct')
+        b.wait_present('table.listing-ct tbody')
         b.wait_text('table.listing-ct tbody:nth-child(3) div.listing-ct-head h3', name + " cockpit-base.1")
         b.wait_present('table.listing-ct tbody:nth-child(3) i.fa-check-circle-o')
         b.wait_present('table.listing-ct tbody:nth-child(3).active')
@@ -159,6 +164,12 @@ class OstreeRestartCase(MachineCase):
         b.wait_visible("table.listing-ct tbody:nth-child(3) div.signatures")
         b.wait_in_text("table.listing-ct tbody:nth-child(3) div.signatures", "No signature avaliable")
 
+        # Require signatures
+        m.execute("sed -i /gpg-verify/d /etc/ostree/remotes.d/local.conf")
+        # HACK: rpm-ostree doesn't reload remote settings properly
+        # https://github.com/projectatomic/rpm-ostree/issues/401
+        m.execute("systemctl restart rpm-ostreed")
+
         b.wait_not_in_text('table.listing-ct tbody:nth-child(4) div.listing-ct-head h3', "cockpit")
         b.wait_present('table.listing-ct tbody:nth-child(4) i.fa-circle')
         b.wait_in_text('table.listing-ct tbody:nth-child(4) div.listing-ct-status', "Available")
@@ -176,7 +187,7 @@ class OstreeRestartCase(MachineCase):
         b.wait_present("table.listing-ct tbody:nth-child(2) div.listing-ct-actions button.enabled")
 
         # Serve repo
-        start_trivial_httpd(m)
+        server_pid = start_trivial_httpd(m)
 
         # Check for new commit
         b.click("table.listing-ct tbody:nth-child(2) div.listing-ct-actions button")
@@ -221,14 +232,13 @@ class OstreeRestartCase(MachineCase):
         self.check_sig (b, "table.listing-ct tbody:nth-child(3)")
 
         # Force an error
-        pid = m.execute('ps -C ostree -o pid h')
-        m.execute('kill {0}'.format(pid))
+        stop_trivial_httpd(m, server_pid)
         b.wait_not_present('table.listing-ct tbody:nth-child(3) div.listing-ct-error')
         b.click("table.listing-ct tbody:nth-child(3) div.listing-ct-actions button")
         b.wait_present("table.listing-ct tbody:nth-child(3) div.listing-ct-actions button.disabled")
         b.wait_present("table.listing-ct tbody:nth-child(3) div.listing-ct-actions button.enabled")
         b.wait_present('table.listing-ct tbody:nth-child(3) div.listing-ct-error')
-        start_trivial_httpd(m)
+        server_pid = start_trivial_httpd(m)
 
         # Apply update
         b.click("table.listing-ct tbody:nth-child(3) div.listing-ct-actions button")
@@ -248,6 +258,7 @@ class OstreeRestartCase(MachineCase):
 
         # After reboot, check commit
         b.wait_present('table.listing-ct')
+        b.wait_present('table.listing-ct tbody')
         b.wait_text('table.listing-ct tbody:nth-child(3) div.listing-ct-head h3', name + " cockpit-base.2")
         b.wait_present('table.listing-ct tbody:nth-child(3) i.fa-check-circle-o')
         b.wait_present('table.listing-ct tbody:nth-child(3) div.listing-ct-panel,active')
@@ -295,6 +306,8 @@ class OstreeRestartCase(MachineCase):
         m.reset_reboot_flag()
 
         # After reboot upgrade but no rollback target
+        b.wait_present('table.listing-ct')
+        b.wait_present('table.listing-ct tbody')
         b.wait_present('table.listing-ct tbody:nth-child(3) i.fa-circle')
         b.wait_in_text("table.listing-ct tbody:nth-child(3) div.listing-ct-actions button", "Update")
         b.wait_present('table.listing-ct tbody:nth-child(4) i.fa-check-circle-o')

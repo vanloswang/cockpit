@@ -57,6 +57,7 @@ account    required     pam_succeed_if.so user ingroup %s""" % m.get_admin_group
             b.wait_js_cond("document.activeElement.getAttribute('id') === 'login-user-input'")
             b.set_val('#login-user-input', user)
             b.set_val('#login-password-input', password)
+            b.set_checked('#authorized-input', True)
             b.click('#login-button')
 
         # Try to login as a non-existing user
@@ -73,6 +74,14 @@ account    required     pam_succeed_if.so user ingroup %s""" % m.get_admin_group
             b.wait_in_text("#login-error-message", "Server closed connection")
         else:
             b.wait_text("#login-error-message", "Permission denied")
+
+        # Try to login with disabled shell; this does not work on Atomic where
+        # we log in through ssh
+        if m.image not in ["continuous-atomic", "fedora-atomic", "rhel-atomic"]:
+            m.execute("usermod --shell /bin/false admin")
+            login("admin", "foobar")
+            b.wait_text_not("#login-error-message", "")
+            m.execute("usermod --shell /bin/bash admin")
 
         # Login as admin
         b.open("/system")
@@ -97,6 +106,30 @@ account    required     pam_succeed_if.so user ingroup %s""" % m.get_admin_group
             assert False, "cockpit-session debug messsages found"
         except subprocess.CalledProcessError:
             pass
+
+        # Change login screen options
+        b.logout()
+        b.wait_visible("#option-group")
+        m.execute("printf '[WebService]\nLoginTo = false\n' > /etc/cockpit/cockpit.conf")
+        m.restart_cockpit()
+        b.open("/system")
+        b.wait_present("#option-group")
+        b.wait_not_visible("#option-group")
+
+        # Default options be to display these options
+        m.execute("rm /etc/cockpit/cockpit.conf")
+        m.restart_cockpit()
+        b.open("/system")
+        b.wait_present("#option-group")
+        b.wait_visible("#option-group")
+
+        # And now we remove cockpit-ssh which affects the default
+        if m.image not in [ "continuous-atomic", "fedora-atomic", "rhel-atomic" ]:
+            m.execute("rm -f /usr/libexec/cockpit-ssh /usr/lib/cockpit/cockpit-ssh")
+            m.restart_cockpit()
+            b.open("/system")
+            b.wait_present("#option-group")
+            b.wait_not_visible("#option-group")
 
         self.allow_journal_messages ("Returning error-response ... with reason .*",
                             "pam_unix\(cockpit:auth\): authentication failure; .*",
@@ -245,6 +278,7 @@ account    required     pam_succeed_if.so user ingroup %s""" % m.get_admin_group
             b.wait_visible("#user-group")
             b.set_val('#login-user-input', user)
             b.set_val('#login-password-input', password)
+            b.set_checked('#authorized-input', True)
             b.click('#login-button')
 
         # Try to login as a non-existing user
